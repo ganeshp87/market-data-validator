@@ -1,0 +1,226 @@
+package com.marketdata.validator.feed;
+
+import com.marketdata.validator.model.Connection;
+import com.marketdata.validator.model.Tick;
+import net.logstash.logback.argument.StructuredArguments;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.web.reactive.socket.WebSocketMessage;
+import org.springframework.web.reactive.socket.client.ReactorNettyWebSocketClient;
+import org.springframework.web.reactive.socket.client.WebSocketClient;
+import reactor.core.Disposable;
+import reactor.core.publisher.Mono;
+
+import java.net.URI;
+import java.time.Instant;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
+
+/**
+ * Manages a single WebSocket connection to a market data feed.
+ * Handles: connect, disconnect, auto-reconnect with exponential backoff,
+ * message routing through FeedAdapter, and tick broadcasting.
+ */
+public class FeedConnection {
+
+    private static final Logger log = LoggerFactory.getLogger(FeedConnection.class);
+    private static final int MAX_RECONNECT_ATTEMPTS = 10;
+    private static final long MAX_BACKOFF_MS = 30_000;
+
+    private final Connection connection;
+    private final FeedAdapter adapter;
+    private final WebSocketClient webSocketClient;
+    private final List<Consumer<Tick>> tickListeners = new CopyOnWriteArrayList<>();
+
+    private Disposable wsSession;
+    private final AtomicInteger reconnectAttempts = new AtomicInteger(0);
+    private final AtomicBoolean reconnecting = new AtomicBoolean(false);
+    private volatile boolean intentionalDisconnect = false;
+
+    public FeedConnection(Connection connection, FeedAdapter adapter) {
+        this(connection, adapter, new ReactorNettyWebSocketClient());
+    }
+
+    /**
+     * Constructor with injectable WebSocketClient — used for testing.
+     */
+    public FeedConnection(Connection connection, FeedAdapter adapter,
+                          WebSocketClient webSocketClient) {
+        this.connection = connection;
+        this.adapter = adapter;
+        this.webSocketClient = webSocketClient;
+    }
+
+    /**
+     * Connect to the WebSocket feed and start receiving messages.
+     */
+    public void connect() {
+        intentionalDisconnect = false;
+        reconnecting.set(false);
+        doConnect();
+    }
+
+    /**
+     * Intentionally disconnect — no auto-reconnect.
+     */
+    public void disconnect() {
+        intentionalDisconnect = true;
+        if (wsSession != null && !wsSession.isDisposed()) {
+            wsSession.dispose();
+        }
+        connection.setStatus(Connection.Status.DISCONNECTED);
+        log.info("Disconnected from feed: {}", connection.getName());
+    }
+
+    /**
+     * Register a listener that receives every parsed Tick.
+     */
+    public void addTickListener(Consumer<Tick> listener) {
+        tickListeners.add(listener);
+    }
+
+    /**
+     * Remove a tick listener.
+     */
+    public void removeTickListener(Consumer<Tick> listener) {
+        tickListeners.remove(listener);
+    }
+
+    public Connection getConnection() {
+        return connection;
+    }
+
+    public int getReconnectAttempts() {
+        return reconnectAttempts.get();
+    }
+
+    public boolean isConnected() {
+        return connection.getStatus() == Connection.Status.CONNECTED;
+    }
+
+    // --- Internal ---
+
+    private void doConnect() {
+        URI uri = URI.create(connection.getUrl());
+        log.info("Connecting to feed: {} {}",
+                StructuredArguments.keyValue("feed", connection.getName()),
+                StructuredArguments.keyValue("url", uri));
+
+        wsSession = webSocketClient.execute(uri, session -> {
+            // On connect: mark connected, reset reconnect counter, subscribe
+            connection.setStatus(Connection.Status.CONNECTED);
+            connection.setConnectedAt(Instant.now());
+            reconnectAttempts.set(0);
+            log.info("Connected to feed: {} {}",
+                    StructuredArguments.keyValue("feed", connection.getName()),
+                    StructuredArguments.keyValue("event", "connected"));
+
+            // Send subscribe message
+            String subscribeMsg = adapter.getSubscribeMessage(connection.getSymbols());
+            Mono<Void> send = session.send(
+                    Mono.just(session.textMessage(subscribeMsg)));
+
+            // Receive messages
+            Mono<Void> receive = session.receive()
+                    .map(WebSocketMessage::getPayloadAsText)
+                    .doOnNext(this::handleMessage)
+                    .then();
+
+            return send.thenMany(receive).then();
+        })
+        .doOnError(error -> {
+            log.warn("WebSocket error for {} {} {}",
+                    StructuredArguments.keyValue("feed", connection.getName()),
+                    StructuredArguments.keyValue("event", "ws_error"),
+                    StructuredArguments.keyValue("error", error.getMessage()));
+            handleDisconnect();
+        })
+        .doOnTerminate(() -> {
+            if (!intentionalDisconnect) {
+                handleDisconnect();
+            }
+        })
+        .subscribe();
+    }
+
+    private void handleMessage(String rawMessage) {
+        if (adapter.isHeartbeat(rawMessage)) {
+            return;
+        }
+
+        Tick tick = adapter.parseTick(rawMessage);
+        if (tick == null) {
+            return;
+        }
+
+        tick.setFeedId(connection.getId());
+        connection.recordTick();
+
+        // Broadcast to all listeners
+        for (Consumer<Tick> listener : tickListeners) {
+            try {
+                listener.accept(tick);
+            } catch (Exception e) {
+                log.error("Tick listener error: {}", e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Handle an unexpected disconnection. Applies CAS guard to prevent
+     * duplicate reconnects when both doOnError and doOnTerminate fire.
+     * Package-visible for testing the reconnect guard.
+     */
+    void handleDisconnect() {
+        if (intentionalDisconnect) {
+            return;
+        }
+
+        // Guard: only one reconnect per disconnect event (doOnError + doOnTerminate both fire)
+        if (!reconnecting.compareAndSet(false, true)) {
+            return;
+        }
+
+        int attempt = reconnectAttempts.incrementAndGet();
+        if (attempt > MAX_RECONNECT_ATTEMPTS) {
+            connection.setStatus(Connection.Status.ERROR);
+            log.error("Feed {} failed after {} reconnect attempts {}",
+                    StructuredArguments.keyValue("feed", connection.getName()),
+                    MAX_RECONNECT_ATTEMPTS,
+                    StructuredArguments.keyValue("event", "reconnect_exhausted"));
+            return;
+        }
+
+        connection.setStatus(Connection.Status.RECONNECTING);
+        long backoffMs = calculateBackoff(attempt);
+        log.info("Reconnecting {} in {}ms (attempt {}/{}) {}",
+                StructuredArguments.keyValue("feed", connection.getName()),
+                backoffMs, attempt, MAX_RECONNECT_ATTEMPTS,
+                StructuredArguments.keyValue("event", "reconnecting"));
+
+        // Schedule reconnect on a virtual thread (or daemon thread)
+        Thread.ofVirtual().start(() -> {
+            try {
+                Thread.sleep(backoffMs);
+                if (!intentionalDisconnect) {
+                    reconnecting.set(false);
+                    doConnect();
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+    }
+
+    /**
+     * Exponential backoff: min(2^attempt * 1000, 30000) ms.
+     * Visible for testing.
+     */
+    long calculateBackoff(int attempt) {
+        long backoff = (long) Math.pow(2, attempt - 1) * 1000;
+        return Math.min(backoff, MAX_BACKOFF_MS);
+    }
+}

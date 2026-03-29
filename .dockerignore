@@ -1,0 +1,11 @@
+**/node_modules
+**/target
+**/.git
+**/.idea
+**/.vscode
+**/data
+*.md
+*.bat
+docker-compose.yml
+Dockerfile
+Learnings.md

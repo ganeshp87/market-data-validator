@@ -1,0 +1,30 @@
+# Build outputs
+backend/target/
+frontend/dist/
+frontend/node_modules/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Runtime
+*.pid
+*.log
+backend/*.log
+backend/data/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Temp/backup files
+*.bak
+*.tmp
+*.swp
+*.orig
+
+# Interview/personal prep (keep locally, exclude from public repo)
+docs/*Interview*
+docs/*Prep*
+docs/Stream-Validator-Prompts.md
