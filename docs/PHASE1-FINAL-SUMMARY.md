@@ -1,7 +1,7 @@
 # Phase 1 Final Summary — Market Data Stream Validator
 
 > **Status:** COMPLETE — All systems verified, all tests passing, ready for production deployment
-> **Test Suite:** 777 tests (592 backend + 185 frontend), 0 failures, 0 errors
+> **Test Suite:** 782 tests (597 backend + 185 frontend), 0 failures, 0 errors
 
 ---
 
@@ -122,13 +122,13 @@ End-to-end verification was performed against a **live Binance WebSocket feed** 
 
 ## Test Suite Summary
 
-### Backend — 592 Tests (JUnit 5 + Mockito + AssertJ)
+### Backend — 597 Tests (JUnit 5 + Mockito + AssertJ)
 
 | Package | Tests | Coverage Areas |
 |---------|-------|---------------|
-| model/ | ~25 | BigDecimal precision, latency calc, null handling, enums |
+| model/ | ~27 | BigDecimal precision, latency calc, null handling, enums, clock-skew clamping |
 | feed/ | ~75 | Adapter parsing, reconnect CAS guard, FeedManager CRUD, health checks |
-| validator/ | ~218 | 8 validators + engine + backpressure queue (including concurrent overflow proofs) |
+| validator/ | ~221 | 8 validators + engine + backpressure queue (including concurrent overflow proofs, clock-skew latency clamping) |
 | session/ | ~60 | Recording, replay, export, flush failure containment |
 | store/ | ~41 | SQLite CRUD, batch operations, query correctness |
 | controller/ | ~58 | REST endpoints, SSRF validation, SSE, MockMvc |
@@ -141,7 +141,7 @@ End-to-end verification was performed against a **live Binance WebSocket feed** 
 ### Result
 
 ```
-[INFO] Tests run: 592, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 597, Failures: 0, Errors: 0, Skipped: 0
 [INFO] BUILD SUCCESS
 ```
 

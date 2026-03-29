@@ -4,10 +4,10 @@
 > **Stack:** Java 21 LTS, Spring Boot 3.3.0, React 18 + Vite 5, SQLite, Docker
 > **Package:** `com.marketdata.validator`
 > **Port:** 8082
-> **Status:** COMPLETE — 777 tests passing (592 backend + 185 frontend), Phase 1 hardening applied + hardening tests + E2E verified
+> **Status:** COMPLETE — 782 tests passing (597 backend + 185 frontend), Phase 1 hardening applied + hardening tests + E2E verified
 > **Last Updated:** March 2026
 
-> **Note:** This system evolved beyond the initial blueprint scope with production-grade enhancements including automatic alert generation, co-located component tests, batch tick parsing, session replay state machines, rolling file logging, and a live unacknowledged-alert badge. A Phase 1 production hardening pass added graceful shutdown lifecycle, reconnect race protection, backpressure concurrency guards, SQLite WAL mode, batch transaction safety, and flush error containment. A follow-up hardening-test pass added 14 targeted behavioral tests (CAS race proof, flush failure containment, destroy resilience, concurrent overflow invariant) and 2 minimal production changes for testability. A final E2E verification pass discovered and fixed a SessionRecorder wiring bug (ticks were never routed to the recorder) and a BackpressureQueue TOCTOU race condition. All additions follow the same design principles (bounded buffers, structured logging, O(1)-per-tick processing) documented throughout.
+> **Note:** This system evolved beyond the initial blueprint scope with production-grade enhancements including automatic alert generation, co-located component tests, batch tick parsing, session replay state machines, rolling file logging, and a live unacknowledged-alert badge. A Phase 1 production hardening pass added graceful shutdown lifecycle, reconnect race protection, backpressure concurrency guards, SQLite WAL mode, batch transaction safety, and flush error containment. A follow-up hardening-test pass added 14 targeted behavioral tests (CAS race proof, flush failure containment, destroy resilience, concurrent overflow invariant) and 2 minimal production changes for testability. A final E2E verification pass discovered and fixed a SessionRecorder wiring bug (ticks were never routed to the recorder) and a BackpressureQueue TOCTOU race condition. All additions follow the same design principles (bounded buffers, structured logging, O(1)-per-tick processing) documented throughout. A subsequent fix addressed negative latency caused by clock skew between local machine and exchange NTP-synced servers — `getLatencyMs()` now clamps to zero, and `LatencyValidator` uses the clamped value, with 5 regression tests added.
 
 ---
 
@@ -55,7 +55,7 @@ Exchange WebSocket -> FeedAdapter -> FeedConnection -> FeedManager -> Backpressu
 | Metric | Value |
 |--------|-------|
 | Validators | 8 (Accuracy, Latency, Completeness, Ordering, Throughput, Reconnection, Subscription, Stateful) |
-| Backend Tests | 592 (JUnit 5 + Mockito + AssertJ) |
+| Backend Tests | 597 (JUnit 5 + Mockito + AssertJ) |
 | Frontend Tests | 185 (Vitest + React Testing Library) |
 | API Endpoints | 33 across 7 controllers |
 | Database Tables | 5 (connections, sessions, ticks, validations, alerts) |
@@ -87,7 +87,7 @@ public class Tick {
     private String traceId;           // UUID for tracing through validation pipeline
 
     public Duration getLatency();     // receivedTimestamp - exchangeTimestamp
-    public long getLatencyMs();       // Latency in milliseconds
+    public long getLatencyMs();       // Latency in milliseconds (clamped to 0 for clock skew)
 }
 ```
 
@@ -909,11 +909,11 @@ Thresholds: PASS rate >= 99.99% AND no stale symbols
 
 ## 10. Test Suite
 
-### Backend  592 Tests (JUnit 5 + Mockito + AssertJ)
+### Backend  597 Tests (JUnit 5 + Mockito + AssertJ)
 
 | Package | Test Class | Count | What It Covers |
 |---------|-----------|-------|----------------|
-| model | TickTest | 9 | BigDecimal precision, latency calc, null handling, correlationId/traceId |
+| model | TickTest | 11 | BigDecimal precision, latency calc, null handling, correlationId/traceId, negative latency clock-skew clamping |
 | model | ConnectionTest | - | ID generation, status, recordTick |
 | model | LatencyStatsTest | 5 | Percentile computation |
 | model | ValidationResultTest | 11 | Area enum, status, factory methods |
@@ -923,7 +923,7 @@ Thresholds: PASS rate >= 99.99% AND no stale symbols
 | feed | FeedConnectionTest | 21 | Backoff calculation, connect/disconnect, reconnect CAS guard (double/triple/concurrent `handleDisconnect`, intentional-disconnect precedence — CyclicBarrier 10-thread proof) |
 | feed | FeedManagerTest | 22 | CRUD, health check, adapter creation for all 3 types, `destroy()` per-connection exception isolation (one-throws, all-throw, empty-map edge cases via reflection-injected mocks) |
 | validator | AccuracyValidatorTest | 22 | Negative price, bid>ask, spikes, accuracy rate |
-| validator | LatencyValidatorTest | 22 | Percentiles, sliding window, threshold transitions |
+| validator | LatencyValidatorTest | 25 | Percentiles, sliding window, threshold transitions, negative latency clock-skew clamping, mixed normal+skew ticks |
 | validator | CompletenessValidatorTest | 25 | Gaps, multi-symbol, stale, massive gaps |
 | validator | OrderingValidatorTest | 17 | Timestamp order, bid/ask, volume |
 | validator | ThroughputValidatorTest | 27 | Rate, drops, zero throughput, rolling average |
@@ -1253,6 +1253,6 @@ A follow-up test pass added 14 tests (4 reconnect CAS, 7 flush failure, 3 destro
 
 This document reflects the exact state of the codebase as of the Phase 1 final commit.
 Every class, endpoint, test, and configuration described above exists and works.
-777 tests pass (592 backend + 185 frontend).
+782 tests pass (597 backend + 185 frontend).
 
 Phase 1 production hardening has been applied and E2E verified against live Binance WebSocket feeds. A follow-up hardening-test pass added 14 targeted behavioral tests and 2 minimal production changes (package-visible `handleDisconnect()`, per-connection try-catch in `destroy()`). An E2E verification pass discovered and fixed 4 real bugs: Mockito SPI misconfiguration, SpringBootTest+MockBean NullBean interaction, BackpressureQueue TOCTOU race, and SessionRecorder missing FeedManager wiring. See Section 15 for details and known caveats.

@@ -28,7 +28,7 @@ Exchange WebSocket ──→ Feed Ingestion ──→ BackpressureQueue ──�
 - **Database:** SQLite (WAL mode, single-connection pool, zero-config)
 - **Logging:** Structured JSON via logstash-logback-encoder 7.4
 - **Containerization:** Docker multi-stage build
-- **Testing:** 592 backend tests (JUnit 5 + Mockito + AssertJ), 185 frontend tests (Vitest + RTL)
+- **Testing:** 597 backend tests (JUnit 5 + Mockito + AssertJ), 185 frontend tests (Vitest + RTL)
 
 ## Quick Start
 
@@ -131,9 +131,9 @@ The app will be available at http://localhost:8082.
 ## Test Suite
 
 ```
-Backend:  592 tests (JUnit 5 + Mockito + AssertJ)
+Backend:  597 tests (JUnit 5 + Mockito + AssertJ)
 Frontend: 185 tests (Vitest + React Testing Library)
-Total:    777 tests — ALL PASSING
+Total:    782 tests — ALL PASSING
 ```
 
 ## Bugs Found & Fixed (Phase 1)

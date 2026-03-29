@@ -2,7 +2,7 @@
 
 > **Project:** Market Data Stream Validator
 > **Stack:** Java 21 LTS, Spring Boot 3.3.0, React 18, SQLite, Docker
-> **Tests:** 777 (592 backend + 185 frontend)
+> **Tests:** 782 (597 backend + 185 frontend)
 > **Status:** Phase 1 Complete
 
 ---
