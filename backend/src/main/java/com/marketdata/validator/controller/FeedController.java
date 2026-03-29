@@ -2,6 +2,7 @@ package com.marketdata.validator.controller;
 
 import com.marketdata.validator.feed.FeedManager;
 import com.marketdata.validator.model.Connection;
+import com.marketdata.validator.validator.ValidatorEngine;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -32,9 +33,11 @@ import java.util.Map;
 public class FeedController {
 
     private final FeedManager feedManager;
+    private final ValidatorEngine validatorEngine;
 
-    public FeedController(FeedManager feedManager) {
+    public FeedController(FeedManager feedManager, ValidatorEngine validatorEngine) {
         this.feedManager = feedManager;
+        this.validatorEngine = validatorEngine;
     }
 
     /**
@@ -105,8 +108,14 @@ public class FeedController {
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> removeFeed(@PathVariable String id) {
         boolean removed = feedManager.removeConnection(id);
-        return removed ? ResponseEntity.noContent().build()
-                       : ResponseEntity.notFound().build();
+        if (!removed) {
+            return ResponseEntity.notFound().build();
+        }
+        // Reset validators when no feeds remain to clear stale gap/state counts
+        if (feedManager.getAllConnections().isEmpty()) {
+            validatorEngine.reset();
+        }
+        return ResponseEntity.noContent().build();
     }
 
     /**

@@ -3,6 +3,7 @@ package com.marketdata.validator.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.marketdata.validator.feed.FeedManager;
 import com.marketdata.validator.model.Connection;
+import com.marketdata.validator.validator.ValidatorEngine;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -27,6 +28,9 @@ class FeedControllerTest {
 
     @MockBean
     private FeedManager feedManager;
+
+    @MockBean
+    private ValidatorEngine validatorEngine;
 
     @Autowired
     private ObjectMapper objectMapper;
@@ -173,9 +177,12 @@ class FeedControllerTest {
     @Test
     void removeFeedReturns204() throws Exception {
         when(feedManager.removeConnection("feed-1")).thenReturn(true);
+        when(feedManager.getAllConnections()).thenReturn(List.of());
 
         mvc.perform(delete("/api/feeds/feed-1"))
                 .andExpect(status().isNoContent());
+
+        verify(validatorEngine).reset();
     }
 
     @Test

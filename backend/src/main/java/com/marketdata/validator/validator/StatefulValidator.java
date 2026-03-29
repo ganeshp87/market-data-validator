@@ -226,7 +226,7 @@ public class StatefulValidator implements Validator {
             status = Status.FAIL;
             message = String.format("Consistency: %.2f%%, stale: %d symbols",
                     consistencyRate, staleSymbols.size());
-        } else if (consistencyRate < passThreshold || !staleSymbols.isEmpty()) {
+        } else if (consistencyRate < passThreshold) {
             status = Status.WARN;
             message = String.format("Consistency: %.2f%%, stale: %d symbols",
                     consistencyRate, staleSymbols.size());

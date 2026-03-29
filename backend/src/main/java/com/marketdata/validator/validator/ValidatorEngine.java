@@ -2,6 +2,8 @@ package com.marketdata.validator.validator;
 
 import com.marketdata.validator.model.Tick;
 import com.marketdata.validator.model.ValidationResult;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import net.logstash.logback.argument.StructuredArguments;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,6 +13,9 @@ import org.springframework.stereotype.Component;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
@@ -33,9 +38,38 @@ public class ValidatorEngine {
     private final List<Validator> validators;
     private final List<Consumer<List<ValidationResult>>> listeners = new CopyOnWriteArrayList<>();
     private final AtomicLong tickCount = new AtomicLong(0);
+    private ScheduledExecutorService throughputScheduler;
 
     public ValidatorEngine(List<Validator> validators) {
         this.validators = List.copyOf(validators); // Defensive copy — immutable after construction
+    }
+
+    /**
+     * Start a 1-second timer that drives ThroughputValidator's per-second snapshot.
+     * Only runs in Spring context (tests create ValidatorEngine directly, skipping this).
+     */
+    @PostConstruct
+    void startThroughputTimer() {
+        validators.stream()
+                .filter(v -> v instanceof ThroughputValidator)
+                .map(v -> (ThroughputValidator) v)
+                .findFirst()
+                .ifPresent(tv -> {
+                    throughputScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+                        Thread t = new Thread(r, "throughput-timer");
+                        t.setDaemon(true);
+                        return t;
+                    });
+                    throughputScheduler.scheduleAtFixedRate(tv::tick, 1, 1, TimeUnit.SECONDS);
+                    log.info("ThroughputValidator timer started (1s interval)");
+                });
+    }
+
+    @PreDestroy
+    void stopThroughputTimer() {
+        if (throughputScheduler != null) {
+            throughputScheduler.shutdownNow();
+        }
     }
 
     /**
