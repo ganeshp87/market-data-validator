@@ -54,9 +54,10 @@ public class Tick {
 
     /**
      * Latency in milliseconds — convenience for validators and UI.
+     * Clamped to 0 minimum to handle clock skew between local machine and exchange servers.
      */
     public long getLatencyMs() {
-        return getLatency().toMillis();
+        return Math.max(0, getLatency().toMillis());
     }
 
     // --- Getters and Setters ---

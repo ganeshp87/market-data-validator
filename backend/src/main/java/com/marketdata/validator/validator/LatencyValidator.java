@@ -8,7 +8,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
-import java.time.Duration;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -75,8 +74,7 @@ public class LatencyValidator implements Validator {
             return;
         }
 
-        Duration latency = tick.getLatency();
-        long latencyMs = latency.toMillis();
+        long latencyMs = tick.getLatencyMs();
 
         totalTicks.incrementAndGet();
 
