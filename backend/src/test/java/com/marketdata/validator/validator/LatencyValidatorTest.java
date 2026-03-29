@@ -302,6 +302,71 @@ class LatencyValidatorTest {
         assertThat(result.getMetric()).isEqualTo(42.0);
     }
 
+    // --- Negative latency / clock skew ---
+
+    @Test
+    void negativeLatencyClampsToZeroInBuffer() {
+        // Simulate clock skew: exchange timestamp ahead of received timestamp
+        Instant exchangeTs = Instant.parse("2026-03-23T10:00:02.000Z");
+        Instant receivedTs = Instant.parse("2026-03-23T10:00:00.000Z"); // 2s behind
+
+        Tick tick = new Tick("BTCUSDT", new BigDecimal("45000"), new BigDecimal("1"),
+                1, exchangeTs, "test-feed");
+        tick.setReceivedTimestamp(receivedTs);
+
+        validator.onTick(tick);
+
+        // Negative latency should be clamped to 0, not stored as -2000
+        assertThat(validator.getMinLatency()).isEqualTo(0);
+        assertThat(validator.getMaxLatency()).isEqualTo(0);
+        assertThat(validator.getP50()).isEqualTo(0);
+    }
+
+    @Test
+    void clockSkewTicksDoNotCauseFailure() {
+        // Feed 100 ticks with clock skew (negative raw latency)
+        for (int i = 1; i <= 100; i++) {
+            Instant exchangeTs = Instant.parse("2026-03-23T10:00:02.000Z");
+            Instant receivedTs = Instant.parse("2026-03-23T10:00:00.000Z");
+
+            Tick tick = new Tick("BTCUSDT", new BigDecimal("45000"), new BigDecimal("1"),
+                    i, exchangeTs, "test-feed");
+            tick.setReceivedTimestamp(receivedTs);
+            validator.onTick(tick);
+        }
+
+        // All clamped to 0ms — should PASS, not FAIL
+        ValidationResult result = validator.getResult();
+        assertThat(result.getStatus()).isEqualTo(ValidationResult.Status.PASS);
+        assertThat(result.getMetric()).isEqualTo(0.0); // p95 = 0
+    }
+
+    @Test
+    void mixOfNormalAndClockSkewTicksHandledCorrectly() {
+        // 50 normal ticks at 50ms
+        for (int i = 1; i <= 50; i++) {
+            feedTickWithLatency("BTCUSDT", 50, i);
+        }
+
+        // 50 clock-skew ticks (negative raw latency → clamped to 0)
+        for (int i = 51; i <= 100; i++) {
+            Instant exchangeTs = Instant.parse("2026-03-23T10:00:01.500Z");
+            Instant receivedTs = Instant.parse("2026-03-23T10:00:00.000Z");
+
+            Tick tick = new Tick("BTCUSDT", new BigDecimal("45000"), new BigDecimal("1"),
+                    i, exchangeTs, "test-feed");
+            tick.setReceivedTimestamp(receivedTs);
+            validator.onTick(tick);
+        }
+
+        // p95 should be 50ms (from normal ticks), min should be 0 (from clamped), not -1500
+        assertThat(validator.getMinLatency()).isEqualTo(0);
+        assertThat(validator.getMaxLatency()).isEqualTo(50);
+
+        ValidationResult result = validator.getResult();
+        assertThat(result.getStatus()).isEqualTo(ValidationResult.Status.PASS);
+    }
+
     // --- Helpers ---
 
     private void feedTickWithLatency(String symbol, long latencyMs, long seqNum) {

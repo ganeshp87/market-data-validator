@@ -71,6 +71,32 @@ class TickTest {
         assertThat(tick2.getLatencyMs()).isEqualTo(0);
     }
 
+    // --- Negative latency (clock skew) ---
+
+    @Test
+    void latencyMsClampsNegativeToZero() {
+        // Simulates clock skew: local machine ~2s behind exchange NTP-synced server
+        Tick tick = new Tick();
+        tick.setExchangeTimestamp(Instant.parse("2026-03-23T10:00:02.000Z"));
+        tick.setReceivedTimestamp(Instant.parse("2026-03-23T10:00:00.000Z"));
+
+        // Raw duration is negative
+        assertThat(tick.getLatency()).isNegative();
+        // getLatencyMs() must clamp to 0
+        assertThat(tick.getLatencyMs()).isEqualTo(0);
+    }
+
+    @Test
+    void latencyMsReturnPositiveWhenReceivedAfterExchange() {
+        Tick tick = new Tick();
+        tick.setExchangeTimestamp(Instant.parse("2026-03-23T10:00:00.000Z"));
+        tick.setReceivedTimestamp(Instant.parse("2026-03-23T10:00:00.150Z"));
+
+        // Positive latency should pass through unchanged
+        assertThat(tick.getLatencyMs()).isEqualTo(150);
+        assertThat(tick.getLatency()).isEqualTo(Duration.ofMillis(150));
+    }
+
     @Test
     void bidAndAskAreNullable() {
         Tick tick = new Tick("BTCUSDT", new BigDecimal("100"),
