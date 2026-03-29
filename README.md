@@ -53,6 +53,17 @@ npm run dev
 
 Open http://localhost:5174 in your browser (Vite proxies `/api` to backend on 8082).
 
+### Feed Manager
+
+Once the backend is running, use the feed manager to check connection status or reconnect:
+
+```bash
+python3 feed-manager.py              # Auto-detect & fix (reconnects if stale/disconnected)
+python3 feed-manager.py --status     # Just show current feed status
+python3 feed-manager.py --reconnect  # Force delete + recreate feed
+python3 feed-manager.py --stop       # Stop all feeds
+```
+
 ### Run with Docker
 
 ```bash
