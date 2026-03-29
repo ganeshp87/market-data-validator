@@ -28,3 +28,5 @@ Thumbs.db
 docs/*Interview*
 docs/*Prep*
 docs/Stream-Validator-Prompts.md
+~$*
+*.docx

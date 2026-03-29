@@ -6,6 +6,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -230,5 +231,151 @@ class FeedConnectionTest {
 
         // Exactly 1 reconnect regardless of thread count
         assertThat(feedConnection.getReconnectAttempts()).isEqualTo(1);
+    }
+
+    // --- Clock offset estimation tests ---
+
+    private Tick makeTick(Instant exchangeTs, Instant receivedTs) {
+        Tick t = new Tick();
+        t.setSymbol("BTCUSDT");
+        t.setPrice(new BigDecimal("45000"));
+        t.setExchangeTimestamp(exchangeTs);
+        t.setReceivedTimestamp(receivedTs);
+        return t;
+    }
+
+    @Test
+    void clockOffsetNotCalibratedBeforeSampleSize() {
+        when(mockAdapter.isHeartbeat(anyString())).thenReturn(false);
+
+        Instant exchangeTs = Instant.parse("2024-01-01T12:00:00Z");
+        // local clock 2 seconds behind → receivedTs < exchangeTs
+        Instant receivedTs = exchangeTs.minusMillis(2000);
+        when(mockAdapter.parseTick(anyString())).thenReturn(makeTick(exchangeTs, receivedTs));
+
+        // Feed fewer than OFFSET_SAMPLE_SIZE ticks
+        for (int i = 0; i < FeedConnection.OFFSET_SAMPLE_SIZE - 1; i++) {
+            feedConnection.handleMessage("tick" + i);
+        }
+
+        assertThat(feedConnection.isOffsetCalibrated()).isFalse();
+        assertThat(feedConnection.getClockOffsetMs()).isEqualTo(0);
+    }
+
+    @Test
+    void clockOffsetCalibratesAfterSampleSize() {
+        when(mockAdapter.isHeartbeat(anyString())).thenReturn(false);
+
+        Instant exchangeTs = Instant.parse("2024-01-01T12:00:00Z");
+        Instant receivedTs = exchangeTs.minusMillis(2000); // raw = -2000ms
+        when(mockAdapter.parseTick(anyString())).thenReturn(makeTick(exchangeTs, receivedTs));
+
+        for (int i = 0; i < FeedConnection.OFFSET_SAMPLE_SIZE; i++) {
+            feedConnection.handleMessage("tick" + i);
+        }
+
+        assertThat(feedConnection.isOffsetCalibrated()).isTrue();
+        // offset = min(-2000) - 5ms baseline = -2005
+        assertThat(feedConnection.getClockOffsetMs()).isEqualTo(-2005);
+    }
+
+    @Test
+    void calibratedOffsetCorrectsTicks() {
+        when(mockAdapter.isHeartbeat(anyString())).thenReturn(false);
+
+        Instant exchangeTs = Instant.parse("2024-01-01T12:00:00Z");
+        // Simulate clock skew of -2000ms with varying network latency (30-80ms)
+        // raw latency = receivedTs - exchangeTs = networkLatency + clockSkew
+        // Example: networkLatency=50ms, clockSkew=-2000ms → raw=-1950ms
+        long clockSkew = -2000;
+        long[] networkLatencies = new long[FeedConnection.OFFSET_SAMPLE_SIZE];
+        for (int i = 0; i < FeedConnection.OFFSET_SAMPLE_SIZE; i++) {
+            networkLatencies[i] = 30 + (i * 3); // 30, 33, 36, ..., 87ms
+            long rawMs = networkLatencies[i] + clockSkew;
+            Instant recvTs = exchangeTs.plusMillis(rawMs);
+            when(mockAdapter.parseTick("tick" + i)).thenReturn(makeTick(exchangeTs, recvTs));
+            feedConnection.handleMessage("tick" + i);
+        }
+
+        assertThat(feedConnection.isOffsetCalibrated()).isTrue();
+        // min raw = 30 + (-2000) = -1970, offset = -1970 - 5 = -1975
+        assertThat(feedConnection.getClockOffsetMs()).isEqualTo(-1975);
+
+        // Now send a tick with 50ms real latency and verify correction
+        long realLatency = 50;
+        long rawMs = realLatency + clockSkew; // -1950
+        Instant correctedRecvTs = exchangeTs.plusMillis(rawMs);
+        Tick tickToSend = makeTick(exchangeTs, correctedRecvTs);
+        when(mockAdapter.parseTick("calibrated-tick")).thenReturn(tickToSend);
+
+        List<Tick> received = new ArrayList<>();
+        feedConnection.addTickListener(received::add);
+        feedConnection.handleMessage("calibrated-tick");
+
+        assertThat(received).hasSize(1);
+        Tick corrected = received.get(0);
+        // corrected latency = raw - offset = -1950 - (-1975) = 25ms
+        assertThat(corrected.getLatencyMs()).isEqualTo(25);
+    }
+
+    @Test
+    void clockOffsetResetsOnReconnect() {
+        when(mockAdapter.isHeartbeat(anyString())).thenReturn(false);
+
+        Instant exchangeTs = Instant.parse("2024-01-01T12:00:00Z");
+        Instant receivedTs = exchangeTs.minusMillis(2000);
+        when(mockAdapter.parseTick(anyString())).thenReturn(makeTick(exchangeTs, receivedTs));
+
+        for (int i = 0; i < FeedConnection.OFFSET_SAMPLE_SIZE; i++) {
+            feedConnection.handleMessage("tick" + i);
+        }
+        assertThat(feedConnection.isOffsetCalibrated()).isTrue();
+
+        // Reset — simulates what connect() does
+        feedConnection.resetClockOffset();
+
+        assertThat(feedConnection.isOffsetCalibrated()).isFalse();
+        assertThat(feedConnection.getClockOffsetMs()).isEqualTo(0);
+    }
+
+    @Test
+    void clockOffsetHandlesNullTimestamps() {
+        Tick tick = new Tick();
+        tick.setSymbol("BTCUSDT");
+        // Both timestamps null — should not throw
+        feedConnection.applyClockOffsetCorrection(tick);
+        assertThat(feedConnection.isOffsetCalibrated()).isFalse();
+    }
+
+    @Test
+    void clockOffsetWithPositiveSkewShowsRealLatency() {
+        when(mockAdapter.isHeartbeat(anyString())).thenReturn(false);
+
+        // Local clock 500ms AHEAD of exchange — all raw latencies inflated
+        Instant exchangeTs = Instant.parse("2024-01-01T12:00:00Z");
+        long clockSkew = 500; // local ahead by 500ms
+
+        for (int i = 0; i < FeedConnection.OFFSET_SAMPLE_SIZE; i++) {
+            long networkLatency = 20 + i; // 20..39ms
+            long rawMs = networkLatency + clockSkew;
+            Instant recvTs = exchangeTs.plusMillis(rawMs);
+            when(mockAdapter.parseTick("tick" + i)).thenReturn(makeTick(exchangeTs, recvTs));
+            feedConnection.handleMessage("tick" + i);
+        }
+
+        assertThat(feedConnection.isOffsetCalibrated()).isTrue();
+        // min raw = 20 + 500 = 520, offset = 520 - 5 = 515
+        assertThat(feedConnection.getClockOffsetMs()).isEqualTo(515);
+
+        // After calibration, tick with 35ms real latency
+        long rawMs = 35 + clockSkew; // 535
+        when(mockAdapter.parseTick("after")).thenReturn(makeTick(exchangeTs, exchangeTs.plusMillis(rawMs)));
+
+        List<Tick> received = new ArrayList<>();
+        feedConnection.addTickListener(received::add);
+        feedConnection.handleMessage("after");
+
+        // corrected = 535 - 515 = 20ms
+        assertThat(received.get(0).getLatencyMs()).isEqualTo(20);
     }
 }

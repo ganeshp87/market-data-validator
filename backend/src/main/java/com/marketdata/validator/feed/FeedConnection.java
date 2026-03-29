@@ -12,7 +12,9 @@ import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
 
 import java.net.URI;
+import java.time.Duration;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -29,6 +31,10 @@ public class FeedConnection {
     private static final Logger log = LoggerFactory.getLogger(FeedConnection.class);
     private static final int MAX_RECONNECT_ATTEMPTS = 10;
     private static final long MAX_BACKOFF_MS = 30_000;
+    static final int OFFSET_SAMPLE_SIZE = 20;
+    // Assumed minimum one-way network latency (ms). Subtracted from the min sample
+    // so the offset compensates for clock skew only, not network delay.
+    static final long ASSUMED_MIN_NETWORK_MS = 5;
 
     private final Connection connection;
     private final FeedAdapter adapter;
@@ -39,6 +45,12 @@ public class FeedConnection {
     private final AtomicInteger reconnectAttempts = new AtomicInteger(0);
     private final AtomicBoolean reconnecting = new AtomicBoolean(false);
     private volatile boolean intentionalDisconnect = false;
+
+    // Clock offset estimation: adjusts for skew between local clock and exchange
+    private final long[] offsetSamples = new long[OFFSET_SAMPLE_SIZE];
+    private int offsetSampleCount = 0;
+    private volatile long clockOffsetMs = 0;
+    private volatile boolean offsetCalibrated = false;
 
     public FeedConnection(Connection connection, FeedAdapter adapter) {
         this(connection, adapter, new ReactorNettyWebSocketClient());
@@ -60,6 +72,7 @@ public class FeedConnection {
     public void connect() {
         intentionalDisconnect = false;
         reconnecting.set(false);
+        resetClockOffset();
         doConnect();
     }
 
@@ -146,7 +159,7 @@ public class FeedConnection {
         .subscribe();
     }
 
-    private void handleMessage(String rawMessage) {
+    void handleMessage(String rawMessage) {
         if (adapter.isHeartbeat(rawMessage)) {
             return;
         }
@@ -158,6 +171,7 @@ public class FeedConnection {
 
         tick.setFeedId(connection.getId());
         connection.recordTick();
+        applyClockOffsetCorrection(tick);
 
         // Broadcast to all listeners
         for (Consumer<Tick> listener : tickListeners) {
@@ -167,6 +181,49 @@ public class FeedConnection {
                 log.error("Tick listener error: {}", e.getMessage());
             }
         }
+    }
+
+    /**
+     * Estimates clock offset from the first N ticks.
+     * Uses min(rawLatency) - ASSUMED_MIN_NETWORK_MS so the offset removes only
+     * the clock skew component, preserving real network latency in the output.
+     */
+    void applyClockOffsetCorrection(Tick tick) {
+        if (tick.getExchangeTimestamp() == null || tick.getReceivedTimestamp() == null) {
+            return;
+        }
+
+        long rawMs = Duration.between(tick.getExchangeTimestamp(), tick.getReceivedTimestamp()).toMillis();
+
+        if (!offsetCalibrated) {
+            offsetSamples[offsetSampleCount++] = rawMs;
+            if (offsetSampleCount >= OFFSET_SAMPLE_SIZE) {
+                long minRaw = Arrays.stream(offsetSamples).min().orElse(0);
+                clockOffsetMs = minRaw - ASSUMED_MIN_NETWORK_MS;
+                offsetCalibrated = true;
+                log.info("Clock offset calibrated: {}ms (minRaw={}ms, baseline={}ms) from {} samples {}",
+                        clockOffsetMs, minRaw, ASSUMED_MIN_NETWORK_MS, OFFSET_SAMPLE_SIZE,
+                        StructuredArguments.keyValue("event", "clock_offset_calibrated"));
+            }
+        }
+
+        if (clockOffsetMs != 0) {
+            tick.setReceivedTimestamp(tick.getReceivedTimestamp().minusMillis(clockOffsetMs));
+        }
+    }
+
+    void resetClockOffset() {
+        offsetSampleCount = 0;
+        clockOffsetMs = 0;
+        offsetCalibrated = false;
+    }
+
+    long getClockOffsetMs() {
+        return clockOffsetMs;
+    }
+
+    boolean isOffsetCalibrated() {
+        return offsetCalibrated;
     }
 
     /**

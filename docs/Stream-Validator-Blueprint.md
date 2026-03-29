@@ -4,10 +4,10 @@
 > **Stack:** Java 21 LTS, Spring Boot 3.3.0, React 18 + Vite 5, SQLite, Docker
 > **Package:** `com.marketdata.validator`
 > **Port:** 8082
-> **Status:** COMPLETE — 782 tests passing (597 backend + 185 frontend), Phase 1 hardening applied + hardening tests + E2E verified
+> **Status:** COMPLETE — 788 tests passing (603 backend + 185 frontend), Phase 1 hardening applied + hardening tests + E2E verified
 > **Last Updated:** March 2026
 
-> **Note:** This system evolved beyond the initial blueprint scope with production-grade enhancements including automatic alert generation, co-located component tests, batch tick parsing, session replay state machines, rolling file logging, and a live unacknowledged-alert badge. A Phase 1 production hardening pass added graceful shutdown lifecycle, reconnect race protection, backpressure concurrency guards, SQLite WAL mode, batch transaction safety, and flush error containment. A follow-up hardening-test pass added 14 targeted behavioral tests (CAS race proof, flush failure containment, destroy resilience, concurrent overflow invariant) and 2 minimal production changes for testability. A final E2E verification pass discovered and fixed a SessionRecorder wiring bug (ticks were never routed to the recorder) and a BackpressureQueue TOCTOU race condition. All additions follow the same design principles (bounded buffers, structured logging, O(1)-per-tick processing) documented throughout. A subsequent fix addressed negative latency caused by clock skew between local machine and exchange NTP-synced servers — `getLatencyMs()` now clamps to zero, and `LatencyValidator` uses the clamped value, with 5 regression tests added.
+> **Note:** This system evolved beyond the initial blueprint scope with production-grade enhancements including automatic alert generation, co-located component tests, batch tick parsing, session replay state machines, rolling file logging, and a live unacknowledged-alert badge. A Phase 1 production hardening pass added graceful shutdown lifecycle, reconnect race protection, backpressure concurrency guards, SQLite WAL mode, batch transaction safety, and flush error containment. A follow-up hardening-test pass added 14 targeted behavioral tests (CAS race proof, flush failure containment, destroy resilience, concurrent overflow invariant) and 2 minimal production changes for testability. A final E2E verification pass discovered and fixed a SessionRecorder wiring bug (ticks were never routed to the recorder) and a BackpressureQueue TOCTOU race condition. All additions follow the same design principles (bounded buffers, structured logging, O(1)-per-tick processing) documented throughout. A subsequent fix addressed negative latency caused by clock skew between local machine and exchange NTP-synced servers — `getLatencyMs()` now clamps to zero, and `LatencyValidator` uses the clamped value, with 5 regression tests added. A further enhancement added **clock offset estimation** in `FeedConnection`: the first 20 ticks calibrate the clock skew between local and exchange time, then all subsequent ticks are adjusted so the dashboard displays real network latency (typically 5–50ms) instead of 0ms, with 6 tests covering calibration, correction accuracy, reset, and null safety.
 
 ---
 
@@ -47,6 +47,7 @@ Market data quality is non-negotiable in financial systems. A single corrupt pri
 ```
 Exchange WebSocket -> FeedAdapter -> FeedConnection -> FeedManager -> BackpressureQueue -> ValidatorEngine (8 validators) -> SSE -> React Dashboard
                                                                           |
+                   
                                                                           +-> SessionRecorder -> SQLite
 ```
 
@@ -472,6 +473,7 @@ Methods: getSubscribeMessage(symbols), getUnsubscribeMessage(symbols),
 - Uses `ReactorNettyWebSocketClient` (from WebFlux)
 - Auto-reconnect with exponential backoff: `min(2^(attempt-1) x 1000, 30000) ms`
 - Maximum 10 reconnect attempts before ERROR state
+- **Clock offset estimation:** Collects the first 20 raw latency samples, computes `min(samples) - 5ms` as the clock offset (isolating skew from network delay), then adjusts each tick's `receivedTimestamp` before broadcasting. Resets on reconnect. Produces realistic 5–50ms latency readings even when local clock is seconds behind exchange NTP-synced servers.
 - **Reconnect CAS guard:** `AtomicBoolean reconnecting` with `compareAndSet(false, true)` prevents double reconnect when Reactor's `doOnError` and `doOnTerminate` both fire for the same failure event. Guard resets on fresh `connect()` and before each retry's `doConnect()`.
 - `handleDisconnect()` is package-visible (not private) to enable deterministic reconnect-race testing without mocking Reactor internals. Same convention as `calculateBackoff()`.
 - Injectable WebSocketClient constructor for testing
@@ -920,7 +922,7 @@ Thresholds: PASS rate >= 99.99% AND no stale symbols
 | feed | BinanceAdapterTest | - | JSON parsing, heartbeat, malformed, edge cases |
 | feed | FinnhubAdapterTest | 15 | Trade arrays, empty data, ping, multi-trade |
 | feed | GenericAdapterTest | 17 | Default mappings, custom fields, heartbeat types |
-| feed | FeedConnectionTest | 21 | Backoff calculation, connect/disconnect, reconnect CAS guard (double/triple/concurrent `handleDisconnect`, intentional-disconnect precedence — CyclicBarrier 10-thread proof) |
+| feed | FeedConnectionTest | 27 | Backoff calculation, connect/disconnect, reconnect CAS guard (double/triple/concurrent `handleDisconnect`, intentional-disconnect precedence — CyclicBarrier 10-thread proof), clock offset estimation (calibration, correction accuracy, reset, null timestamps, positive/negative skew) |
 | feed | FeedManagerTest | 22 | CRUD, health check, adapter creation for all 3 types, `destroy()` per-connection exception isolation (one-throws, all-throw, empty-map edge cases via reflection-injected mocks) |
 | validator | AccuracyValidatorTest | 22 | Negative price, bid>ask, spikes, accuracy rate |
 | validator | LatencyValidatorTest | 25 | Percentiles, sliding window, threshold transitions, negative latency clock-skew clamping, mixed normal+skew ticks |
@@ -1253,6 +1255,6 @@ A follow-up test pass added 14 tests (4 reconnect CAS, 7 flush failure, 3 destro
 
 This document reflects the exact state of the codebase as of the Phase 1 final commit.
 Every class, endpoint, test, and configuration described above exists and works.
-782 tests pass (597 backend + 185 frontend).
+788 tests pass (603 backend + 185 frontend).
 
 Phase 1 production hardening has been applied and E2E verified against live Binance WebSocket feeds. A follow-up hardening-test pass added 14 targeted behavioral tests and 2 minimal production changes (package-visible `handleDisconnect()`, per-connection try-catch in `destroy()`). An E2E verification pass discovered and fixed 4 real bugs: Mockito SPI misconfiguration, SpringBootTest+MockBean NullBean interaction, BackpressureQueue TOCTOU race, and SessionRecorder missing FeedManager wiring. See Section 15 for details and known caveats.
