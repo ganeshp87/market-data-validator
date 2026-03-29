@@ -123,7 +123,7 @@ class LatencyValidatorTest {
 
     @Test
     void lowLatencyProducesPass() {
-        // p95 < 100ms (default threshold), no spikes
+        // p95 < 500ms (default threshold), no spikes
         for (int i = 1; i <= 100; i++) {
             feedTickWithLatency("BTCUSDT", 50, i); // 50ms — well under threshold
         }
@@ -134,9 +134,9 @@ class LatencyValidatorTest {
 
     @Test
     void highP95ProducesWarn() {
-        // p95 >= 100ms but < 200ms → WARN
+        // p95 >= 500ms but < 1000ms → WARN
         for (int i = 1; i <= 100; i++) {
-            feedTickWithLatency("BTCUSDT", 150, i); // All 150ms → p95=150ms
+            feedTickWithLatency("BTCUSDT", 600, i); // All 600ms → p95=600ms
         }
 
         ValidationResult result = validator.getResult();

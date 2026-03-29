@@ -23,7 +23,7 @@ import java.util.concurrent.locks.ReentrantLock;
  *   - Spike detection: latency > p99 * 3
  *
  * Result thresholds:
- *   PASS: p95 < threshold (100ms) AND spikeCount < 5
+ *   PASS: p95 < threshold (500ms) AND spikeCount < 5
  *   WARN: p95 < threshold * 2 OR spikeCount >= 5
  *   FAIL: p95 >= threshold * 2 OR spikeCount >= 20
  */
@@ -32,7 +32,7 @@ public class LatencyValidator implements Validator {
 
     private static final Logger log = LoggerFactory.getLogger(LatencyValidator.class);
     private static final int DEFAULT_BUFFER_SIZE = 10_000;
-    private static final long DEFAULT_THRESHOLD_MS = 100;
+    private static final long DEFAULT_THRESHOLD_MS = 500;
     private static final int SPIKE_WARN_THRESHOLD = 5;
     private static final int SPIKE_FAIL_THRESHOLD = 20;
 

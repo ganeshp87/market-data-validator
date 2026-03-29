@@ -793,7 +793,7 @@ On each tick:
   3. Compute p50, p95, p99 from sorted window
 
 State: CircularBuffer<Long> latencyWindow, LatencyStats snapshot
-Thresholds: PASS p95 < 100ms, WARN p95 < 200ms, FAIL p95 >= 200ms
+Thresholds: PASS p95 < 500ms, WARN p95 < 1000ms, FAIL p95 >= 1000ms
 ```
 
 ### 9.3 CompletenessValidator
