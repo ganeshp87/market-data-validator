@@ -50,17 +50,22 @@ Exchange WebSocket ──→ Feed Ingestion ──→ BackpressureQueue ──�
 ## Quick Start
 
 ### Prerequisites
-- Java 21 LTS
-- Node.js 22+
-- Maven 3.9+
+- Java 21 LTS ([Temurin](https://adoptium.net/) recommended)
+- Node.js 18+
+- Maven is **not required** — the Maven wrapper (`mvnw`) downloads it automatically
 
 ### Run Locally
 
 ```bash
 # 1. Start backend (port 8082)
 cd backend
-export JAVA_HOME=$(/usr/libexec/java_home -v 21)  # macOS only
-./mvnw spring-boot:run
+./mvnw spring-boot:run          # macOS / Linux
+mvnw.cmd spring-boot:run        # Windows
+
+# If Java 21 is not your default JDK, set JAVA_HOME first:
+#   macOS:  export JAVA_HOME=$(/usr/libexec/java_home -v 21)
+#   Linux:  export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+#   Windows: set JAVA_HOME=C:\Program Files\Eclipse Adoptium\jdk-21...
 
 # 2. In a separate terminal, start frontend (port 5174)
 cd frontend
@@ -69,6 +74,8 @@ npm run dev
 ```
 
 Open http://localhost:5174 in your browser (Vite proxies `/api` to backend on 8082).
+
+> **SQLite is zero-config** — the `data/` directory and schema are created automatically on first run.
 
 ### Feed Manager
 
