@@ -26,16 +26,17 @@ Exchange WebSocket ──→ Feed Ingestion ──→ BackpressureQueue ──�
 > Screenshots reflect the current state of the system and are updated with each significant implementation phase.
 > Currently running locally against a live Binance WebSocket feed. Deployment target: AWS.
 
-### Live Feed — Real-time BTCUSDT tick stream
+| Screen | Description |
+|--------|-------------|
+| **Live Feed** | Real-time BTCUSDT tick stream — price, volume, sequence, latency per tick |
+| **Validation Dashboard** | All 8 validators live — Accuracy, Latency, Completeness, Ordering, Throughput, Reconnection, Subscription, Stateful |
+| **Sessions** | Session recording, replay at 1x/2x/5x speed, JSON/CSV export, session compare |
+| **Connections** | Feed management — add/start/stop/delete WebSocket connections |
+
+<!-- Screenshot images are stored in docs/screenshots/ and updated with each release -->
 ![Live Feed](docs/screenshots/live-feed.png)
-
-### Validation Dashboard — All 8 validators live
 ![Validation Dashboard](docs/screenshots/validation-dashboard.png)
-
-### Sessions — Recording, replay, and export
 ![Sessions](docs/screenshots/sessions.png)
-
-### Connections — Feed management
 ![Connections](docs/screenshots/connections.png)
 
 ## Tech Stack
@@ -51,8 +52,18 @@ Exchange WebSocket ──→ Feed Ingestion ──→ BackpressureQueue ──�
 
 ### Option 1 — Docker (recommended, no Java or Node.js required)
 
+**Using Docker Compose (simplest):**
 ```bash
 docker compose up --build
+```
+
+**Using docker run (build once, run anywhere):**
+```bash
+# Build the image
+docker build -t market-data-validator .
+
+# Run it
+docker run -p 8082:8082 -v $(pwd)/data:/app/data market-data-validator
 ```
 
 Open http://localhost:8082 — frontend and backend served from a single container.
