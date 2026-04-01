@@ -32,12 +32,14 @@ Exchange WebSocket ──→ Feed Ingestion ──→ BackpressureQueue ──�
 | **Validation Dashboard** | All 8 validators live — Accuracy, Latency, Completeness, Ordering, Throughput, Reconnection, Subscription, Stateful |
 | **Sessions** | Session recording, replay at 1x/2x/5x speed, JSON/CSV export, session compare |
 | **Connections** | Feed management — add/start/stop/delete WebSocket connections |
+| **Alerts** | Alert rules — threshold breaches, spike detection, email/webhook notifications |
 
 <!-- Screenshot images are stored in docs/screenshots/ and updated with each release -->
 ![Live Feed](docs/screenshots/live-feed.png)
 ![Validation Dashboard](docs/screenshots/validation-dashboard.png)
 ![Sessions](docs/screenshots/sessions.png)
 ![Connections](docs/screenshots/connections.png)
+![Alerts](docs/screenshots/alerts.png)
 
 ## Tech Stack
 
