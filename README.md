@@ -21,6 +21,22 @@ Exchange WebSocket ──→ Feed Ingestion ──→ BackpressureQueue ──�
 | **Subscription** | Subscribe/unsubscribe correctness |
 | **Stateful** | VWAP, OHLC, cumulative volume, stale detection |
 
+## Screenshots
+
+### Live Feed — Real-time BTCUSDT tick stream
+![Live Feed](docs/screenshots/live-feed.png)
+
+### Validation Dashboard — All 8 validators live
+![Validation Dashboard](docs/screenshots/validation-dashboard.png)
+
+### Sessions — Recording, replay, and export
+![Sessions](docs/screenshots/sessions.png)
+
+### Connections — Feed management
+![Connections](docs/screenshots/connections.png)
+
+> All screenshots captured from a live Binance BTCUSDT WebSocket feed.
+
 ## Tech Stack
 
 - **Backend:** Java 21 LTS, Spring Boot 3.3.0, WebFlux WebSocket client, JdbcTemplate

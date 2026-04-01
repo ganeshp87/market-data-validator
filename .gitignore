@@ -32,3 +32,8 @@ docs/*Prep*
 docs/Stream-Validator-Prompts.md
 ~$*
 *.docx
+
+# Allow screenshot images in docs/screenshots/
+!docs/screenshots/*.png
+!docs/screenshots/*.jpg
+!docs/screenshots/*.gif
