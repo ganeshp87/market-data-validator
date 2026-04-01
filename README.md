@@ -23,6 +23,9 @@ Exchange WebSocket ──→ Feed Ingestion ──→ BackpressureQueue ──�
 
 ## Screenshots
 
+> Screenshots reflect the current state of the system and are updated with each significant implementation phase.
+> Currently running locally against a live Binance WebSocket feed. Deployment target: AWS.
+
 ### Live Feed — Real-time BTCUSDT tick stream
 ![Live Feed](docs/screenshots/live-feed.png)
 
@@ -34,8 +37,6 @@ Exchange WebSocket ──→ Feed Ingestion ──→ BackpressureQueue ──�
 
 ### Connections — Feed management
 ![Connections](docs/screenshots/connections.png)
-
-> All screenshots captured from a live Binance BTCUSDT WebSocket feed.
 
 ## Tech Stack
 
