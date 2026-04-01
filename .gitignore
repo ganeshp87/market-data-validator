@@ -13,6 +13,8 @@ frontend/node_modules/
 *.log
 backend/*.log
 backend/data/
+data/
+*.db
 
 # OS
 Thumbs.db
