@@ -49,52 +49,55 @@ Exchange WebSocket ──→ Feed Ingestion ──→ BackpressureQueue ──�
 
 ## Quick Start
 
-### Prerequisites
-- Java 21 LTS ([Temurin](https://adoptium.net/) recommended)
-- Node.js 18+
-- Maven is **not required** — the Maven wrapper (`mvnw`) downloads it automatically
-
-### Run Locally
-
-```bash
-# 1. Start backend (port 8082)
-cd backend
-./mvnw spring-boot:run          # macOS / Linux
-mvnw.cmd spring-boot:run        # Windows
-
-# If Java 21 is not your default JDK, set JAVA_HOME first:
-#   macOS:  export JAVA_HOME=$(/usr/libexec/java_home -v 21)
-#   Linux:  export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
-#   Windows: set JAVA_HOME=C:\Program Files\Eclipse Adoptium\jdk-21...
-
-# 2. In a separate terminal, start frontend (port 5174)
-cd frontend
-npm install
-npm run dev
-```
-
-Open http://localhost:5174 in your browser (Vite proxies `/api` to backend on 8082).
-
-> **SQLite is zero-config** — the `data/` directory and schema are created automatically on first run.
-
-### Feed Manager
-
-Once the backend is running, use the feed manager to check connection status or reconnect:
-
-```bash
-python3 feed-manager.py              # Auto-detect & fix (reconnects if stale/disconnected)
-python3 feed-manager.py --status     # Just show current feed status
-python3 feed-manager.py --reconnect  # Force delete + recreate feed
-python3 feed-manager.py --stop       # Stop all feeds
-```
-
-### Run with Docker
+### Option 1 — Docker (recommended, no Java or Node.js required)
 
 ```bash
 docker compose up --build
 ```
 
-The app will be available at http://localhost:8082.
+Open http://localhost:8082 — frontend and backend served from a single container.
+SQLite data is persisted to `./data/` on your host machine.
+
+---
+
+### Option 2 — Run Locally (for development)
+
+**Prerequisites**
+- Java 21 LTS ([Temurin](https://adoptium.net/) recommended)
+- Node.js 18+
+- Maven is **not required** — the Maven wrapper (`mvnw`) downloads it automatically
+
+```bash
+# Terminal 1 — backend (port 8082)
+cd backend
+./mvnw spring-boot:run          # macOS / Linux
+mvnw.cmd spring-boot:run        # Windows
+
+# If Java 21 is not your default JDK, set JAVA_HOME first:
+#   macOS:   export JAVA_HOME=$(/usr/libexec/java_home -v 21)
+#   Linux:   export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+#   Windows: set JAVA_HOME=C:\Program Files\Eclipse Adoptium\jdk-21...
+
+# Terminal 2 — frontend (port 5174)
+cd frontend
+npm install
+npm run dev
+```
+
+Open http://localhost:5174 — Vite proxies `/api` requests to the backend on port 8082.
+
+> **SQLite is zero-config** — the `data/` directory and schema are created automatically on first run.
+
+### Feed Manager (optional helper script)
+
+Once the backend is running, use the feed manager to check or reset the live WebSocket feed:
+
+```bash
+python3 feed-manager.py              # Auto-detect & fix (reconnects if stale/disconnected)
+python3 feed-manager.py --status     # Show current feed status
+python3 feed-manager.py --reconnect  # Force delete + recreate feed
+python3 feed-manager.py --stop       # Stop all feeds
+```
 
 ## API Endpoints
 
