@@ -125,6 +125,13 @@ public class ValidatorEngine {
     }
 
     /**
+     * Alias for {@link #reset()} — used by SimulatorController to signal a clean session start.
+     */
+    public void resetAllValidatorState() {
+        reset();
+    }
+
+    /**
      * Propagate configuration to all validators.
      */
     public void configure(Map<String, Object> config) {

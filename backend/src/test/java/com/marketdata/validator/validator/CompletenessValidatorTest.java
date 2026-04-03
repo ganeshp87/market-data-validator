@@ -47,7 +47,7 @@ class CompletenessValidatorTest {
 
         ValidationResult result = validator.getResult();
         assertThat(result.getStatus()).isEqualTo(ValidationResult.Status.PASS);
-        assertThat(validator.getGapCount()).isEqualTo(0);
+        assertThat(validator.getMissingSequenceCount()).isEqualTo(0);
     }
 
     // --- Gap detection ---
@@ -57,7 +57,7 @@ class CompletenessValidatorTest {
         feedTick("BTCUSDT", 1, BASE);
         feedTick("BTCUSDT", 3, BASE.plusSeconds(1)); // seq 2 missing
 
-        assertThat(validator.getGapCount()).isEqualTo(1);
+        assertThat(validator.getMissingSequenceCount()).isEqualTo(1);
     }
 
     @Test
@@ -65,7 +65,7 @@ class CompletenessValidatorTest {
         feedTick("BTCUSDT", 1, BASE);
         feedTick("BTCUSDT", 5, BASE.plusSeconds(1)); // seq 2,3,4 missing
 
-        assertThat(validator.getGapCount()).isEqualTo(3);
+        assertThat(validator.getMissingSequenceCount()).isEqualTo(3);
     }
 
     @Test
@@ -74,7 +74,7 @@ class CompletenessValidatorTest {
         feedTick("BTCUSDT", 3, BASE.plusSeconds(1)); // 1 gap
         feedTick("BTCUSDT", 6, BASE.plusSeconds(2)); // 2 more gaps
 
-        assertThat(validator.getGapCount()).isEqualTo(3); // Total: 1 + 2
+        assertThat(validator.getMissingSequenceCount()).isEqualTo(3); // Total: 1 + 2
     }
 
     @Test
@@ -84,14 +84,14 @@ class CompletenessValidatorTest {
         feedTick("BTCUSDT", 3, BASE.plusSeconds(1)); // 1 gap for BTC
         feedTick("ETHUSDT", 2, BASE.plusSeconds(1)); // no gap for ETH
 
-        assertThat(validator.getGapCount()).isEqualTo(1);
+        assertThat(validator.getMissingSequenceCount()).isEqualTo(1);
     }
 
     @Test
     void firstTickForSymbolNeverGap() {
         feedTick("BTCUSDT", 100, BASE); // First tick — seq 100, no prior → no gap
 
-        assertThat(validator.getGapCount()).isEqualTo(0);
+        assertThat(validator.getMissingSequenceCount()).isEqualTo(0);
     }
 
     // --- Status thresholds (percentage-based) ---
@@ -199,12 +199,12 @@ class CompletenessValidatorTest {
         feedTick("BTCUSDT", 5, BASE.plusSeconds(1)); // gaps
 
         assertThat(validator.getTotalTicks()).isEqualTo(2);
-        assertThat(validator.getGapCount()).isEqualTo(3);
+        assertThat(validator.getMissingSequenceCount()).isEqualTo(3);
 
         validator.reset();
 
         assertThat(validator.getTotalTicks()).isEqualTo(0);
-        assertThat(validator.getGapCount()).isEqualTo(0);
+        assertThat(validator.getMissingSequenceCount()).isEqualTo(0);
         assertThat(validator.getStaleSymbols()).isEmpty();
         assertThat(validator.getTrackedSymbolCount()).isEqualTo(0);
         assertThat(validator.getResult().getStatus()).isEqualTo(ValidationResult.Status.PASS);
@@ -230,7 +230,8 @@ class CompletenessValidatorTest {
         feedTick("BTCUSDT", 3, BASE.plusSeconds(1));
 
         ValidationResult result = validator.getResult();
-        assertThat(result.getDetails()).containsKey("gapCount");
+        assertThat(result.getDetails()).containsKey("gapEventCount");
+        assertThat(result.getDetails()).containsKey("missingSequenceCount");
         assertThat(result.getDetails()).containsKey("staleSymbolCount");
         assertThat(result.getDetails()).containsKey("staleSymbols");
         assertThat(result.getDetails()).containsKey("totalTicks");
@@ -257,7 +258,7 @@ class CompletenessValidatorTest {
         feedTick("BTCUSDT", 1001, BASE.plusSeconds(1));
 
         // Gap of 999 (sequences 2 through 1000)
-        assertThat(validator.getGapCount()).isEqualTo(999);
+        assertThat(validator.getMissingSequenceCount()).isEqualTo(999);
     }
 
     @Test
@@ -280,7 +281,7 @@ class CompletenessValidatorTest {
         // First tick for any symbol should never be a gap, regardless of seq num
         feedTick("BTCUSDT", 100, BASE);
 
-        assertThat(validator.getGapCount()).isEqualTo(0);
+        assertThat(validator.getMissingSequenceCount()).isEqualTo(0);
         assertThat(validator.getResult().getStatus()).isEqualTo(ValidationResult.Status.PASS);
     }
 
@@ -296,7 +297,7 @@ class CompletenessValidatorTest {
 
         assertThat(validator.getTrackedSymbolCount()).isEqualTo(20);
         assertThat(validator.getTotalTicks()).isEqualTo(100);
-        assertThat(validator.getGapCount()).isEqualTo(0);
+        assertThat(validator.getMissingSequenceCount()).isEqualTo(0);
     }
 
     // --- Helpers ---

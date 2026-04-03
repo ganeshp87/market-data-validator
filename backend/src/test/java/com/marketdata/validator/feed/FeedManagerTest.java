@@ -3,6 +3,7 @@ package com.marketdata.validator.feed;
 import com.marketdata.validator.model.Connection;
 import com.marketdata.validator.model.Tick;
 import com.marketdata.validator.store.ConnectionStore;
+import com.marketdata.validator.validator.ValidatorEngine;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import java.lang.reflect.Field;
@@ -19,12 +20,14 @@ class FeedManagerTest {
 
     private FeedManager feedManager;
     private ConnectionStore connectionStore;
+    private ValidatorEngine validatorEngine;
 
     @BeforeEach
     void setUp() {
         connectionStore = mock(ConnectionStore.class);
+        validatorEngine = mock(ValidatorEngine.class);
         when(connectionStore.findAll()).thenReturn(List.of());
-        feedManager = new FeedManager(connectionStore);
+        feedManager = new FeedManager(connectionStore, validatorEngine);
     }
 
     // --- CRUD tests ---

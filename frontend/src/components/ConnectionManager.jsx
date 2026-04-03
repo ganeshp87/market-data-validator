@@ -12,7 +12,7 @@ import React, { useState, useEffect, useCallback } from 'react';
  * API: FeedController at /api/feeds
  */
 
-const ADAPTER_TYPES = ['BINANCE', 'FINNHUB', 'GENERIC'];
+const ADAPTER_TYPES = ['BINANCE', 'FINNHUB', 'GENERIC', 'LVWR_T'];
 
 const STATUS_ICONS = {
   CONNECTED: '🟢',

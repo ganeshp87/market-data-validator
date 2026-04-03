@@ -41,7 +41,8 @@ public class CompletenessValidator implements Validator {
     private final Map<String, Instant> lastTickTimeBySymbol = new ConcurrentHashMap<>();
     private final Set<String> staleSymbols = ConcurrentHashMap.newKeySet();
     private final AtomicLong totalTicks = new AtomicLong(0);
-    private final AtomicLong gapCount = new AtomicLong(0);
+    private final AtomicLong gapEventCount = new AtomicLong(0);
+    private final AtomicLong missingSequenceCount = new AtomicLong(0);
 
     private long heartbeatThresholdMs = DEFAULT_HEARTBEAT_THRESHOLD_MS;
 
@@ -63,7 +64,8 @@ public class CompletenessValidator implements Validator {
         // Gap detection: seqNum should be lastSeq + 1
         if (lastSeq != null && tick.getSequenceNum() != lastSeq + 1) {
             long missedCount = tick.getSequenceNum() - lastSeq - 1;
-            gapCount.addAndGet(missedCount);
+            gapEventCount.incrementAndGet();
+            missingSequenceCount.addAndGet(Math.max(0, missedCount));
             log.debug("Sequence gap: symbol={} expected={} got={} missed={}",
                     tick.getSymbol(), lastSeq + 1, tick.getSequenceNum(), missedCount);
         }
@@ -96,13 +98,14 @@ public class CompletenessValidator implements Validator {
                     "No ticks processed yet", 100.0, DEFAULT_PASS_THRESHOLD);
         }
 
-        long gaps = gapCount.get();
+        long gapEvents = gapEventCount.get();
+        long missingSeqs = missingSequenceCount.get();
         long total = totalTicks.get();
         int stale = staleSymbols.size();
 
         // Completeness rate: expected ticks vs actual
-        // totalTicks = ticks received; ticks + gaps = expected
-        double completenessRate = 100.0 * total / (total + gaps);
+        // totalTicks = ticks received; ticks + missingSeqs = expected
+        double completenessRate = 100.0 * total / (total + missingSeqs);
 
         Status status;
         if (stale > 0 || completenessRate < DEFAULT_WARN_THRESHOLD) {
@@ -114,12 +117,13 @@ public class CompletenessValidator implements Validator {
         }
 
         String message = String.format(
-                "gaps=%d, stale symbols=%d (%s), total ticks=%d",
-                gaps, stale, staleSymbols, total);
+                "gapEvents=%d, missingSeqs=%d, stale symbols=%d (%s), total ticks=%d",
+                gapEvents, missingSeqs, stale, staleSymbols, total);
 
         ValidationResult result = new ValidationResult(Area.COMPLETENESS, status,
                 message, completenessRate, DEFAULT_PASS_THRESHOLD);
-        result.getDetails().put("gapCount", gaps);
+        result.getDetails().put("gapEventCount", gapEvents);
+        result.getDetails().put("missingSequenceCount", missingSeqs);
         result.getDetails().put("completenessRate", completenessRate);
         result.getDetails().put("staleSymbolCount", stale);
         result.getDetails().put("staleSymbols", Set.copyOf(staleSymbols));
@@ -135,7 +139,8 @@ public class CompletenessValidator implements Validator {
         lastTickTimeBySymbol.clear();
         staleSymbols.clear();
         totalTicks.set(0);
-        gapCount.set(0);
+        gapEventCount.set(0);
+        missingSequenceCount.set(0);
     }
 
     @Override
@@ -151,8 +156,12 @@ public class CompletenessValidator implements Validator {
         return totalTicks.get();
     }
 
-    long getGapCount() {
-        return gapCount.get();
+    long getGapEventCount() {
+        return gapEventCount.get();
+    }
+
+    long getMissingSequenceCount() {
+        return missingSequenceCount.get();
     }
 
     Set<String> getStaleSymbols() {

@@ -2,12 +2,16 @@ package com.marketdata.validator.feed;
 
 import com.marketdata.validator.model.Connection;
 import com.marketdata.validator.model.Tick;
+import com.marketdata.validator.simulator.LVWRChaosSimulator;
+import com.marketdata.validator.simulator.ScenarioConfig;
 import com.marketdata.validator.store.ConnectionStore;
+import com.marketdata.validator.validator.ValidatorEngine;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
@@ -31,11 +35,14 @@ public class FeedManager {
     private static final Duration STALE_THRESHOLD = Duration.ofSeconds(30);
 
     private final Map<String, FeedConnection> connections = new ConcurrentHashMap<>();
+    private final Map<String, LVWRChaosSimulator> simulators = new ConcurrentHashMap<>();
     private final List<Consumer<Tick>> globalTickListeners = new CopyOnWriteArrayList<>();
     private final ConnectionStore connectionStore;
+    private final ValidatorEngine validatorEngine;
 
-    public FeedManager(ConnectionStore connectionStore) {
+    public FeedManager(ConnectionStore connectionStore, @Lazy ValidatorEngine validatorEngine) {
         this.connectionStore = connectionStore;
+        this.validatorEngine = validatorEngine;
     }
 
     /**
@@ -93,13 +100,26 @@ public class FeedManager {
 
     /**
      * Start a connection's WebSocket feed.
+     * For LVWR_T connections, launches LVWRChaosSimulator on a virtual thread.
      */
     public boolean startConnection(String connectionId) {
         FeedConnection feedConn = connections.get(connectionId);
         if (feedConn == null) {
             return false;
         }
-        feedConn.connect();
+        Connection conn = feedConn.getConnection();
+        if (conn.getAdapterType() == Connection.AdapterType.LVWR_T) {
+            // Reset all validators before starting a fresh simulation run
+            validatorEngine.reset();
+            ScenarioConfig config = new ScenarioConfig();
+            LVWRChaosSimulator sim = new LVWRChaosSimulator(connectionId, config, this::broadcastTick);
+            simulators.put(connectionId, sim);
+            Thread.ofVirtual().name("lvwr-simulator-" + connectionId).start(sim);
+            conn.setStatus(Connection.Status.CONNECTED);
+            log.info("Started LVWR_T simulator for connection: {}", connectionId);
+        } else {
+            feedConn.connect();
+        }
         return true;
     }
 
@@ -111,8 +131,30 @@ public class FeedManager {
         if (feedConn == null) {
             return false;
         }
-        feedConn.disconnect();
+        Connection conn = feedConn.getConnection();
+        if (conn.getAdapterType() == Connection.AdapterType.LVWR_T) {
+            LVWRChaosSimulator sim = simulators.remove(connectionId);
+            if (sim != null) sim.stop();
+            conn.setStatus(Connection.Status.DISCONNECTED);
+            log.info("Stopped LVWR_T simulator for connection: {}", connectionId);
+        } else {
+            feedConn.disconnect();
+        }
         return true;
+    }
+
+    /**
+     * Get the running simulator for the given connection, if any.
+     */
+    public LVWRChaosSimulator getSimulator(String connectionId) {
+        return simulators.get(connectionId);
+    }
+
+    /**
+     * Get all running simulators.
+     */
+    public Map<String, LVWRChaosSimulator> getAllSimulators() {
+        return Map.copyOf(simulators);
     }
 
     /**
@@ -211,6 +253,7 @@ public class FeedManager {
             case BINANCE -> new BinanceAdapter();
             case FINNHUB -> new FinnhubAdapter();
             case GENERIC -> new GenericAdapter();
+            case LVWR_T -> new com.marketdata.validator.simulator.LVWRSimulatorAdapter();
         };
     }
 }

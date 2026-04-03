@@ -7,6 +7,8 @@ import LatencyChart from './components/LatencyChart';
 import ThroughputGauge from './components/ThroughputGauge';
 import SessionManager from './components/SessionManager';
 import AlertPanel from './components/AlertPanel';
+import SimulatorPanel from './components/SimulatorPanel';
+import CompliancePanel from './components/CompliancePanel';
 
 const TABS = [
   { id: 'feed', label: '📡 Live Feed' },
@@ -15,6 +17,8 @@ const TABS = [
   { id: 'latency', label: '📈 Latency' },
   { id: 'sessions', label: '💾 Sessions' },
   { id: 'alerts', label: '🔔 Alerts' },
+  { id: 'simulator', label: '🧪 Simulator' },
+  { id: 'compliance', label: '⚖️ Compliance' },
 ];
 
 export default function App() {
@@ -69,6 +73,8 @@ export default function App() {
           {activeTab === 'latency' && <LatencyChart />}
           {activeTab === 'sessions' && <SessionManager />}
           {activeTab === 'alerts' && <AlertPanel />}
+          {activeTab === 'simulator' && <SimulatorPanel connectionId={null} />}
+          {activeTab === 'compliance' && <CompliancePanel />}
         </main>
       </div>
 

@@ -9,6 +9,7 @@ import com.marketdata.validator.validator.ValidatorEngine;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -146,6 +147,28 @@ public class StreamController {
     @GetMapping("/alerts")
     public SseEmitter streamAlerts() {
         return createEmitter(alertEmitters);
+    }
+
+    /**
+     * GET /api/stream/stats — aggregated snapshot suitable for a dashboard header.
+     * Returns: totalTicks, messagesPerSecond (last second), peakPerSecond,
+     *          activeConnections, overallStatus, activeEmitters.
+     */
+    @GetMapping("/stats")
+    public ResponseEntity<Map<String, Object>> getStats() {
+        List<ValidationResult> results = engine.getResults();
+        long active = feedManager.getActiveConnectionCount();
+        Map<String, Object> stats = Map.of(
+                "timestamp", Instant.now(),
+                "totalTicks", totalTicksEver.get(),
+                "messagesPerSecond", ticksInWindow.get(),
+                "peakPerSecond", peakPerSecond,
+                "activeConnections", active,
+                "overallStatus", computeOverallStatus(results),
+                "activeEmitters", tickEmitters.size() + validationEmitters.size()
+                        + latencyEmitters.size() + throughputEmitters.size()
+        );
+        return ResponseEntity.ok(stats);
     }
 
     // --- Internal: Tick handling ---
