@@ -200,7 +200,7 @@ class FeedControllerTest {
         Connection conn = new Connection("Binance", "wss://stream.binance.com:9443/ws",
                 Connection.AdapterType.BINANCE, List.of("BTCUSDT"));
         when(feedManager.getConnection("feed-1")).thenReturn(conn);
-        when(feedManager.startConnection("feed-1")).thenReturn(true);
+        when(feedManager.startConnection(eq("feed-1"), any())).thenReturn(true);
 
         mvc.perform(post("/api/feeds/feed-1/start"))
                 .andExpect(status().isOk());
@@ -210,7 +210,7 @@ class FeedControllerTest {
     void startFeedReturns400WhenAlreadyActive() throws Exception {
         Connection conn = new Connection();
         when(feedManager.getConnection("feed-1")).thenReturn(conn);
-        when(feedManager.startConnection("feed-1")).thenReturn(false);
+        when(feedManager.startConnection(eq("feed-1"), any())).thenReturn(false);
 
         mvc.perform(post("/api/feeds/feed-1/start"))
                 .andExpect(status().isBadRequest())

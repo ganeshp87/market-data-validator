@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import useSSE from '../hooks/useSSE';
 
 /**
@@ -12,6 +12,7 @@ import useSSE from '../hooks/useSSE';
  *   - Overall status banner at top
  *
  * Uses: useSSE('/api/stream/validation', 'validation') for live updates
+ * Fix 8: Feed scope selector dropdown filters metrics per feed.
  */
 
 const ALL_AREAS = [
@@ -32,8 +33,27 @@ const STATUS_CLASSES = {
 };
 
 export default function ValidationDashboard() {
+  const [feeds, setFeeds] = useState([]);
+  const [selectedFeed, setSelectedFeed] = useState('');
+
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        const res = await fetch('/api/validation/feeds');
+        if (res.ok) setFeeds(await res.json());
+      } catch { /* ignore */ }
+    };
+    poll();
+    const interval = setInterval(poll, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const sseUrl = selectedFeed
+    ? `/api/stream/validation?feedId=${encodeURIComponent(selectedFeed)}`
+    : '/api/stream/validation';
+
   const { latest, connected, error } = useSSE(
-    '/api/stream/validation',
+    sseUrl,
     'validation',
     { maxItems: 1 }
   );
@@ -42,11 +62,27 @@ export default function ValidationDashboard() {
   const overallStatus = latest?.overallStatus || 'PASS';
   const ticksProcessed = latest?.ticksProcessed || 0;
 
+  const scopeLabel = selectedFeed
+    ? `Feed: ${feeds.find(f => f.id === selectedFeed)?.name || selectedFeed}`
+    : 'Global (all feeds)';
+
   return (
     <div className="validation-dashboard">
       <div className="vd-header">
         <h2>Validation Dashboard</h2>
         <div className="vd-summary">
+          <select
+            className="sim-scenario-select"
+            style={{ maxWidth: '220px', fontSize: '0.85em' }}
+            value={selectedFeed}
+            onChange={e => setSelectedFeed(e.target.value)}
+          >
+            <option value="">Global (all feeds)</option>
+            {feeds.map(f => (
+              <option key={f.id} value={f.id}>{f.name}</option>
+            ))}
+          </select>
+          <span style={{ fontSize: '0.8em', opacity: 0.7, marginLeft: '6px' }}>Scope: {scopeLabel}</span>
           <span className={`vd-overall ${STATUS_CLASSES[overallStatus] || ''}`}>
             {STATUS_ICONS[overallStatus] || '⚪'} Overall: {overallStatus}
           </span>
@@ -101,6 +137,13 @@ function ValidationCard({ area, result }) {
             )}
           </div>
         )}
+        {area === 'COMPLETENESS' && (details.gapEventCount != null || details.missingSequenceCount != null) && (
+          <div className="vd-completeness-detail">
+            <span>Gap events: {Number(details.gapEventCount ?? 0).toLocaleString()}</span>
+            {' | '}
+            <span>Missing seqNums: {Number(details.missingSequenceCount ?? 0).toLocaleString()}</span>
+          </div>
+        )}
       </div>
 
       {expanded && Object.keys(details).length > 0 && (
@@ -145,7 +188,7 @@ function formatMetric(area, value) {
     case 'THROUGHPUT':
       return `${Number(value).toLocaleString()} msg/s`;
     case 'COMPLETENESS':
-      return `${Number(value)} gaps`;
+      return `${Number(value).toFixed(2)}%`;
     case 'RECONNECTION':
     case 'SUBSCRIPTION':
       return String(value);

@@ -13,7 +13,7 @@ public class ScenarioConfig {
     private SimulatorMode mode = SimulatorMode.CLEAN;
     private FailureType targetScenario;     // Only used in SCENARIO mode
     private double failureRate = 0.10;      // 0.0–1.0; default 10% for NOISY
-    private int numTrades = 10_000;         // Total trade rows to generate (0 = unlimited)
+    private int numTrades = 0;              // Total trade rows to generate (0 = unlimited)
     private LocalDate tradeDate = LocalDate.now();
     private boolean includeHeartbeats = true;
     private int ticksPerSecond = 50;        // Throughput throttle

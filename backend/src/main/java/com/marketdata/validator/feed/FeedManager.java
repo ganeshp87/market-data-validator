@@ -17,6 +17,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -27,6 +28,9 @@ import java.util.function.Consumer;
  * Manages all WebSocket feed connections.
  * Provides CRUD for connections, start/stop, tick broadcasting,
  * and health monitoring (stale feed detection).
+ *
+ * LVWR_T (simulator) connections are handled separately from real WebSocket
+ * connections — they never go through FeedConnection.
  */
 @Component
 public class FeedManager {
@@ -34,8 +38,13 @@ public class FeedManager {
     private static final Logger log = LoggerFactory.getLogger(FeedManager.class);
     private static final Duration STALE_THRESHOLD = Duration.ofSeconds(30);
 
+    /** Real WebSocket connections */
     private final Map<String, FeedConnection> connections = new ConcurrentHashMap<>();
+    /** LVWR_T simulator connections — Connection object only, no FeedConnection */
+    private final Map<String, Connection> simulatorConnections = new ConcurrentHashMap<>();
+    /** Running simulator Runnables keyed by connectionId */
     private final Map<String, LVWRChaosSimulator> simulators = new ConcurrentHashMap<>();
+
     private final List<Consumer<Tick>> globalTickListeners = new CopyOnWriteArrayList<>();
     private final ConnectionStore connectionStore;
     private final ValidatorEngine validatorEngine;
@@ -55,13 +64,19 @@ public class FeedManager {
         return args -> {
             List<Connection> saved = connectionStore.findAll();
             for (Connection conn : saved) {
-                FeedAdapter adapter = createAdapter(conn.getAdapterType());
-                FeedConnection feedConn = new FeedConnection(conn, adapter);
-                feedConn.addTickListener(this::broadcastTick);
-                connections.put(conn.getId(), feedConn);
-                log.info("Loaded saved connection: {} ({})", conn.getName(), conn.getId());
-                feedConn.connect();
-                log.info("Auto-connected: {}", conn.getName());
+                if (conn.getAdapterType() == Connection.AdapterType.LVWR_T) {
+                    simulatorConnections.put(conn.getId(), conn);
+                    log.info("Loaded saved LVWR_T connection: {} ({})", conn.getName(), conn.getId());
+                    startConnection(conn.getId(), new ScenarioConfig());
+                } else {
+                    FeedAdapter adapter = createAdapter(conn.getAdapterType());
+                    FeedConnection feedConn = new FeedConnection(conn, adapter);
+                    feedConn.addTickListener(this::broadcastTick);
+                    connections.put(conn.getId(), feedConn);
+                    log.info("Loaded saved connection: {} ({})", conn.getName(), conn.getId());
+                    feedConn.connect();
+                    log.info("Auto-connected: {}", conn.getName());
+                }
             }
             if (!saved.isEmpty()) {
                 log.info("Restored {} saved connection(s)", saved.size());
@@ -73,6 +88,15 @@ public class FeedManager {
      * Add a new connection (does not start it).
      */
     public Connection addConnection(Connection connection) {
+        if (connection.getAdapterType() == Connection.AdapterType.LVWR_T) {
+            if (connection.getUrl() == null || connection.getUrl().isBlank()) {
+                connection.setUrl("lvwr://simulator");
+            }
+            simulatorConnections.put(connection.getId(), connection);
+            connectionStore.save(connection);
+            log.info("Added LVWR_T connection: {} ({})", connection.getName(), connection.getId());
+            return connection;
+        }
         FeedAdapter adapter = createAdapter(connection.getAdapterType());
         FeedConnection feedConn = new FeedConnection(connection, adapter);
         feedConn.addTickListener(this::broadcastTick);
@@ -86,6 +110,15 @@ public class FeedManager {
      * Remove a connection. Disconnects first if connected.
      */
     public boolean removeConnection(String connectionId) {
+        // Check simulator connections first
+        Connection simConn = simulatorConnections.remove(connectionId);
+        if (simConn != null) {
+            LVWRChaosSimulator sim = simulators.remove(connectionId);
+            if (sim != null) sim.stop();
+            connectionStore.delete(connectionId);
+            log.info("Removed LVWR_T connection: {}", connectionId);
+            return true;
+        }
         FeedConnection feedConn = connections.remove(connectionId);
         if (feedConn == null) {
             return false;
@@ -99,27 +132,40 @@ public class FeedManager {
     }
 
     /**
-     * Start a connection's WebSocket feed.
-     * For LVWR_T connections, launches LVWRChaosSimulator on a virtual thread.
+     * Start a connection's WebSocket feed (no simulator config).
      */
     public boolean startConnection(String connectionId) {
+        return startConnection(connectionId, null);
+    }
+
+    /**
+     * Start a connection. For LVWR_T, launches LVWRChaosSimulator on a virtual thread.
+     * @param config optional SimulatorConfig; defaults are used if null
+     */
+    public boolean startConnection(String connectionId, ScenarioConfig config) {
+        // LVWR_T simulator path
+        Connection simConn = simulatorConnections.get(connectionId);
+        if (simConn != null) {
+            ScenarioConfig runConfig = config != null ? config : new ScenarioConfig();
+            validatorEngine.reset();
+            // Stop any previously running simulator for this connection
+            LVWRChaosSimulator existing = simulators.remove(connectionId);
+            if (existing != null) existing.stop();
+            LVWRChaosSimulator sim = new LVWRChaosSimulator(connectionId, runConfig, this::broadcastTick);
+            simulators.put(connectionId, sim);
+            Thread.ofVirtual().name("lvwr-simulator-" + connectionId).start(sim);
+            simConn.setStatus(Connection.Status.CONNECTED);
+            simConn.setConnectedAt(Instant.now());
+            log.info("Started LVWR_T simulator for connection: {}", connectionId);
+            return true;
+        }
+
+        // Regular WebSocket path
         FeedConnection feedConn = connections.get(connectionId);
         if (feedConn == null) {
             return false;
         }
-        Connection conn = feedConn.getConnection();
-        if (conn.getAdapterType() == Connection.AdapterType.LVWR_T) {
-            // Reset all validators before starting a fresh simulation run
-            validatorEngine.reset();
-            ScenarioConfig config = new ScenarioConfig();
-            LVWRChaosSimulator sim = new LVWRChaosSimulator(connectionId, config, this::broadcastTick);
-            simulators.put(connectionId, sim);
-            Thread.ofVirtual().name("lvwr-simulator-" + connectionId).start(sim);
-            conn.setStatus(Connection.Status.CONNECTED);
-            log.info("Started LVWR_T simulator for connection: {}", connectionId);
-        } else {
-            feedConn.connect();
-        }
+        feedConn.connect();
         return true;
     }
 
@@ -127,19 +173,21 @@ public class FeedManager {
      * Stop a connection's WebSocket feed.
      */
     public boolean stopConnection(String connectionId) {
+        // LVWR_T simulator path
+        Connection simConn = simulatorConnections.get(connectionId);
+        if (simConn != null) {
+            LVWRChaosSimulator sim = simulators.remove(connectionId);
+            if (sim != null) sim.stop();
+            simConn.setStatus(Connection.Status.DISCONNECTED);
+            log.info("Stopped LVWR_T simulator for connection: {}", connectionId);
+            return true;
+        }
+
         FeedConnection feedConn = connections.get(connectionId);
         if (feedConn == null) {
             return false;
         }
-        Connection conn = feedConn.getConnection();
-        if (conn.getAdapterType() == Connection.AdapterType.LVWR_T) {
-            LVWRChaosSimulator sim = simulators.remove(connectionId);
-            if (sim != null) sim.stop();
-            conn.setStatus(Connection.Status.DISCONNECTED);
-            log.info("Stopped LVWR_T simulator for connection: {}", connectionId);
-        } else {
-            feedConn.disconnect();
-        }
+        feedConn.disconnect();
         return true;
     }
 
@@ -158,25 +206,27 @@ public class FeedManager {
     }
 
     /**
-     * Get a connection by ID.
+     * Get a connection by ID (checks both LVWR_T and regular connections).
      */
     public Connection getConnection(String connectionId) {
+        Connection simConn = simulatorConnections.get(connectionId);
+        if (simConn != null) return simConn;
         FeedConnection feedConn = connections.get(connectionId);
         return feedConn != null ? feedConn.getConnection() : null;
     }
 
     /**
-     * Get all connections.
+     * Get all connections (regular + LVWR_T simulator connections).
      */
     public List<Connection> getAllConnections() {
-        return connections.values().stream()
-                .map(FeedConnection::getConnection)
-                .toList();
+        List<Connection> all = new ArrayList<>();
+        connections.values().stream().map(FeedConnection::getConnection).forEach(all::add);
+        all.addAll(simulatorConnections.values());
+        return all;
     }
 
     /**
      * Register a global tick listener — receives ticks from ALL connections.
-     * Used by ValidatorEngine, SessionRecorder, SSE StreamController.
      */
     public void addGlobalTickListener(Consumer<Tick> listener) {
         globalTickListeners.add(listener);
@@ -191,7 +241,6 @@ public class FeedManager {
 
     /**
      * Check all connections for staleness (no ticks within threshold).
-     * Returns list of stale connection IDs.
      */
     public List<String> checkHealth() {
         Instant cutoff = Instant.now().minus(STALE_THRESHOLD);
@@ -206,19 +255,23 @@ public class FeedManager {
     }
 
     /**
-     * Get total number of managed connections.
+     * Get total number of managed connections (regular + simulator).
      */
     public int getConnectionCount() {
-        return connections.size();
+        return connections.size() + simulatorConnections.size();
     }
 
     /**
-     * Get count of currently connected feeds.
+     * Get count of currently connected feeds (regular + running simulators).
      */
     public long getActiveConnectionCount() {
-        return connections.values().stream()
+        long regularActive = connections.values().stream()
                 .filter(FeedConnection::isConnected)
                 .count();
+        long simActive = simulatorConnections.values().stream()
+                .filter(c -> c.getStatus() == Connection.Status.CONNECTED)
+                .count();
+        return regularActive + simActive;
     }
 
     // --- Lifecycle ---
@@ -226,6 +279,7 @@ public class FeedManager {
     @PreDestroy
     void destroy() {
         log.info("FeedManager shutting down — disconnecting {} connection(s)", connections.size());
+        simulators.values().forEach(sim -> { try { sim.stop(); } catch (Exception ignored) {} });
         connections.values().forEach(fc -> {
             try {
                 fc.disconnect();
@@ -239,6 +293,15 @@ public class FeedManager {
     // --- Internal ---
 
     private void broadcastTick(Tick tick) {
+        // Update tickCount/lastTickAt on the LVWR simulator connection (regular
+        // FeedConnection tracks these internally; LVWR bypasses FeedConnection).
+        if (tick.getFeedId() != null) {
+            Connection simConn = simulatorConnections.get(tick.getFeedId());
+            if (simConn != null) {
+                simConn.recordTick();
+            }
+        }
+
         for (Consumer<Tick> listener : globalTickListeners) {
             try {
                 listener.accept(tick);

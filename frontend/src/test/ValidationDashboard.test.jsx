@@ -315,6 +315,33 @@ describe('ValidationDashboard', () => {
     expect(overallEl).not.toBeNull();
   });
 
+  it('formats completeness metric as percentage not raw float', () => {
+    const payload = makeValidationPayload({
+      COMPLETENESS: makeResult('COMPLETENESS', 'FAIL', {
+        metric: 6.200726833629408,
+        threshold: 99.99,
+        details: {},
+      }),
+    });
+    mockUseSSE.mockReturnValue(defaultSSE({ latest: payload }));
+    render(<ValidationDashboard />);
+    expect(screen.getByText('Value: 6.20%')).toBeInTheDocument();
+    expect(screen.getByText('Threshold: 99.99%')).toBeInTheDocument();
+  });
+
+  it('completeness card shows gap events and missing seqNums from details', () => {
+    const payload = makeValidationPayload({
+      COMPLETENESS: makeResult('COMPLETENESS', 'FAIL', {
+        metric: 16.3,
+        details: { gapEventCount: 8, missingSequenceCount: 128 },
+      }),
+    });
+    mockUseSSE.mockReturnValue(defaultSSE({ latest: payload }));
+    render(<ValidationDashboard />);
+    expect(screen.getByText('Gap events: 8')).toBeInTheDocument();
+    expect(screen.getByText('Missing seqNums: 128')).toBeInTheDocument();
+  });
+
   it('all 8 validator area names displayed correctly', () => {
     mockUseSSE.mockReturnValue(
       defaultSSE({ latest: makeValidationPayload() })

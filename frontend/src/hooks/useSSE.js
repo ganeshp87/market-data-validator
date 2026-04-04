@@ -39,6 +39,10 @@ export default function useSSE(url, eventName, options = {}) {
   useEffect(() => {
     mountedRef.current = true;
 
+    // Clear stale data when URL/deps change (prevents race with late-arriving events)
+    setData([]);
+    setLatest(null);
+
     if (!enabled || !url || !eventName) {
       return;
     }

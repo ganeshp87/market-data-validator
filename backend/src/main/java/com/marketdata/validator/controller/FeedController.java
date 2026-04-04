@@ -2,6 +2,7 @@ package com.marketdata.validator.controller;
 
 import com.marketdata.validator.feed.FeedManager;
 import com.marketdata.validator.model.Connection;
+import com.marketdata.validator.simulator.ScenarioConfig;
 import com.marketdata.validator.validator.ValidatorEngine;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -50,13 +51,24 @@ public class FeedController {
 
     /**
      * Add a new feed connection. Validates URL to prevent SSRF.
+     * LVWR_T connections are exempt — they use a synthetic URL and no external socket.
+     * Detection uses both adapterType enum AND url prefix as a fallback (handles null
+     * adapterType from edge-case JSON deserialization).
      */
     @PostMapping
     public ResponseEntity<?> addFeed(@RequestBody Connection connection) {
-        String validationError = validateFeedUrl(connection.getUrl());
-        if (validationError != null) {
-            return ResponseEntity.badRequest()
-                    .body(Map.of("error", validationError));
+        boolean isLvwr = Connection.AdapterType.LVWR_T.equals(connection.getAdapterType())
+                || (connection.getUrl() != null && connection.getUrl().startsWith("lvwr://"));
+
+        if (!isLvwr) {
+            String validationError = validateFeedUrl(connection.getUrl());
+            if (validationError != null) {
+                return ResponseEntity.badRequest()
+                        .body(Map.of("error", validationError));
+            }
+        } else {
+            connection.setAdapterType(Connection.AdapterType.LVWR_T);
+            connection.setUrl("lvwr://simulator");
         }
 
         Connection created = feedManager.addConnection(connection);
@@ -111,23 +123,22 @@ public class FeedController {
         if (!removed) {
             return ResponseEntity.notFound().build();
         }
-        // Reset validators when no feeds remain to clear stale gap/state counts
-        if (feedManager.getAllConnections().isEmpty()) {
-            validatorEngine.reset();
-        }
+        validatorEngine.reset();
         return ResponseEntity.noContent().build();
     }
 
     /**
      * Start a feed connection (initiate WebSocket handshake).
+     * For LVWR_T connections, an optional SimulatorConfig body configures the simulator.
      */
     @PostMapping("/{id}/start")
-    public ResponseEntity<?> startFeed(@PathVariable String id) {
+    public ResponseEntity<?> startFeed(@PathVariable String id,
+                                       @RequestBody(required = false) ScenarioConfig simulatorConfig) {
         Connection conn = feedManager.getConnection(id);
         if (conn == null) {
             return ResponseEntity.notFound().build();
         }
-        boolean started = feedManager.startConnection(id);
+        boolean started = feedManager.startConnection(id, simulatorConfig);
         if (!started) {
             return ResponseEntity.badRequest()
                     .body(Map.of("error", "Connection already active or failed to start"));

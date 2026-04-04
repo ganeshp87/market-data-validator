@@ -5,6 +5,7 @@ import com.marketdata.validator.simulator.FailureType;
 import com.marketdata.validator.simulator.LVWRChaosSimulator;
 import com.marketdata.validator.simulator.ScenarioConfig;
 import com.marketdata.validator.simulator.SimulatorMode;
+import com.marketdata.validator.validator.ValidatorEngine;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -26,9 +27,11 @@ import java.util.Map;
 public class SimulatorController {
 
     private final FeedManager feedManager;
+    private final ValidatorEngine validatorEngine;
 
-    public SimulatorController(FeedManager feedManager) {
+    public SimulatorController(FeedManager feedManager, ValidatorEngine validatorEngine) {
         this.feedManager = feedManager;
+        this.validatorEngine = validatorEngine;
     }
 
     /**
@@ -57,15 +60,18 @@ public class SimulatorController {
             return ResponseEntity.notFound().build();
         }
         ScenarioConfig config = sim.getConfig();
-        Map<String, Object> status = Map.of(
-                "connectionId", connectionId,
-                "running", sim.isRunning(),
-                "mode", config.getMode().name(),
-                "ticksSent", sim.getTicksSent(),
-                "failuresInjected", sim.getFailuresInjected(),
-                "ticksPerSecond", config.getTicksPerSecond(),
-                "failureRate", config.getFailureRate(),
-                "timestamp", Instant.now()
+        String target = config.getTargetScenario() != null
+                ? config.getTargetScenario().name() : "";
+        Map<String, Object> status = Map.ofEntries(
+                Map.entry("connectionId", connectionId),
+                Map.entry("running", sim.isRunning()),
+                Map.entry("mode", config.getMode().name()),
+                Map.entry("targetScenario", target),
+                Map.entry("ticksSent", sim.getTicksSent()),
+                Map.entry("failuresInjected", sim.getFailuresInjected()),
+                Map.entry("ticksPerSecond", config.getTicksPerSecond()),
+                Map.entry("failureRate", config.getFailureRate()),
+                Map.entry("timestamp", Instant.now())
         );
         return ResponseEntity.ok(status);
     }
@@ -85,6 +91,14 @@ public class SimulatorController {
         // Sanitise rate so it stays in [0.0, 1.0]
         double rate = Math.max(0.0, Math.min(1.0, newConfig.getFailureRate()));
         newConfig.setFailureRate(rate);
+
+        // When the mode changes (e.g. CHAOS → CLEAN) reset all validator state so
+        // stale spike-counts and throughput averages from the previous mode do not
+        // contaminate the new mode's dashboard and alert thresholds (Fix 3).
+        if (newConfig.getMode() != sim.getConfig().getMode()) {
+            validatorEngine.reset();
+        }
+
         sim.updateConfig(newConfig);
         return ResponseEntity.ok(Map.of(
                 "status", "updated",

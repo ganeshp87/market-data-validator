@@ -5,6 +5,7 @@ import com.marketdata.validator.simulator.FailureType;
 import com.marketdata.validator.simulator.LVWRChaosSimulator;
 import com.marketdata.validator.simulator.ScenarioConfig;
 import com.marketdata.validator.simulator.SimulatorMode;
+import com.marketdata.validator.validator.ValidatorEngine;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.ResponseEntity;
@@ -19,11 +20,13 @@ class SimulatorControllerTest {
 
     private SimulatorController controller;
     private FeedManager feedManager;
+    private ValidatorEngine validatorEngine;
 
     @BeforeEach
     void setUp() {
         feedManager = mock(FeedManager.class);
-        controller = new SimulatorController(feedManager);
+        validatorEngine = mock(ValidatorEngine.class);
+        controller = new SimulatorController(feedManager, validatorEngine);
     }
 
     @Test
@@ -62,7 +65,7 @@ class SimulatorControllerTest {
         config.setMode(SimulatorMode.NOISY);
         when(sim.isRunning()).thenReturn(true);
         when(sim.getTicksSent()).thenReturn(1234L);
-        when(sim.getFailuresInjected()).thenReturn(56L);
+        when(sim.getFailuresInjected()).thenReturn(java.util.Map.of("PRICE_SPIKE", 56L));
         when(sim.getConfig()).thenReturn(config);
         when(feedManager.getSimulator("conn-1")).thenReturn(sim);
 
@@ -71,7 +74,9 @@ class SimulatorControllerTest {
         Map<String, Object> body = response.getBody();
         assertThat(body.get("running")).isEqualTo(true);
         assertThat(body.get("ticksSent")).isEqualTo(1234L);
-        assertThat(body.get("failuresInjected")).isEqualTo(56L);
+        @SuppressWarnings("unchecked")
+        java.util.Map<String, Long> failMap = (java.util.Map<String, Long>) body.get("failuresInjected");
+        assertThat(failMap).isNotNull();
         assertThat(body.get("mode")).isEqualTo("NOISY");
     }
 
@@ -85,6 +90,9 @@ class SimulatorControllerTest {
     @Test
     void updateConfigAppliesNewConfigToSimulator() {
         LVWRChaosSimulator sim = mock(LVWRChaosSimulator.class);
+        ScenarioConfig current = new ScenarioConfig();
+        current.setMode(SimulatorMode.CLEAN);
+        when(sim.getConfig()).thenReturn(current);
         when(feedManager.getSimulator("conn-1")).thenReturn(sim);
 
         ScenarioConfig newConfig = new ScenarioConfig();
@@ -99,12 +107,47 @@ class SimulatorControllerTest {
     @Test
     void updateConfigClampsFailureRateAboveOne() {
         LVWRChaosSimulator sim = mock(LVWRChaosSimulator.class);
+        ScenarioConfig current = new ScenarioConfig();
+        current.setMode(SimulatorMode.NOISY);
+        when(sim.getConfig()).thenReturn(current);
         when(feedManager.getSimulator("conn-1")).thenReturn(sim);
 
         ScenarioConfig newConfig = new ScenarioConfig();
+        newConfig.setMode(SimulatorMode.NOISY);
         newConfig.setFailureRate(5.0); // invalid — should be clamped to 1.0
 
         controller.updateConfig("conn-1", newConfig);
         verify(sim).updateConfig(argThat(c -> c.getFailureRate() <= 1.0));
+    }
+
+    @Test
+    void updateConfigResetsValidatorsWhenModeChanges() {
+        LVWRChaosSimulator sim = mock(LVWRChaosSimulator.class);
+        ScenarioConfig current = new ScenarioConfig();
+        current.setMode(SimulatorMode.CHAOS);
+        when(sim.getConfig()).thenReturn(current);
+        when(feedManager.getSimulator("conn-1")).thenReturn(sim);
+
+        ScenarioConfig newConfig = new ScenarioConfig();
+        newConfig.setMode(SimulatorMode.CLEAN); // mode change CHAOS → CLEAN
+
+        controller.updateConfig("conn-1", newConfig);
+        verify(validatorEngine).reset();
+    }
+
+    @Test
+    void updateConfigDoesNotResetValidatorsWhenModeUnchanged() {
+        LVWRChaosSimulator sim = mock(LVWRChaosSimulator.class);
+        ScenarioConfig current = new ScenarioConfig();
+        current.setMode(SimulatorMode.NOISY);
+        when(sim.getConfig()).thenReturn(current);
+        when(feedManager.getSimulator("conn-1")).thenReturn(sim);
+
+        ScenarioConfig newConfig = new ScenarioConfig();
+        newConfig.setMode(SimulatorMode.NOISY); // same mode — no reset expected
+        newConfig.setFailureRate(0.5);
+
+        controller.updateConfig("conn-1", newConfig);
+        verify(validatorEngine, never()).reset();
     }
 }

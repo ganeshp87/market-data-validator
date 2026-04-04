@@ -10,6 +10,7 @@ import java.math.MathContext;
 import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
@@ -27,6 +28,11 @@ import java.util.function.Consumer;
  *
  * Deterministic phase-1 emission order:
  *   126, 1, 2, 26, 20, 55, 8, 12, 54, 13, 14, 16, 19, 78, 9, 24, 23, 17
+ *
+ * Sequence number design (Fix 1):
+ *   Each instrument owns its own seqNum counter (starts at 0; first real tick = 1).
+ *   Heartbeats are emitted with seqNum=0 so validators see a clean 0→1 transition.
+ *   This ensures the CompletenessValidator never detects false gaps in CLEAN mode.
  */
 public class LVWRChaosSimulator implements Runnable {
 
@@ -47,18 +53,28 @@ public class LVWRChaosSimulator implements Runnable {
     private volatile ScenarioConfig config;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicLong ticksSent = new AtomicLong(0);
-    private final AtomicLong failuresInjected = new AtomicLong(0);
+    /** Per-type failure injection counts — keyed by FailureType name */
+    private final Map<String, AtomicLong> failureCountsByType = new ConcurrentHashMap<>();
 
     // Reconnect storm tracking
     private int disconnectCount = 0;
     private long disconnectWindowStart = 0;
 
     public LVWRChaosSimulator(String feedId, ScenarioConfig config, Consumer<Tick> tickConsumer) {
+        this(feedId, config, tickConsumer, new ScenarioEngine());
+    }
+
+    /** Package-private constructor for testing — allows injecting a deterministic ScenarioEngine. */
+    LVWRChaosSimulator(String feedId, ScenarioConfig config, Consumer<Tick> tickConsumer, ScenarioEngine scenarioEngine) {
         this.feedId = feedId;
         this.config = config;
         this.adapter = new LVWRSimulatorAdapter();
-        this.scenarioEngine = new ScenarioEngine();
+        this.scenarioEngine = scenarioEngine;
         this.tickConsumer = tickConsumer;
+        // Pre-populate all 12 failure type counters at zero
+        for (FailureType ft : FailureType.values()) {
+            failureCountsByType.put(ft.name(), new AtomicLong(0));
+        }
         initInstruments();
     }
 
@@ -75,7 +91,6 @@ public class LVWRChaosSimulator implements Runnable {
         // Phase 1: Emit pre-open reference rows for each instrument
         emitPhase1HeartbeatsIfEnabled();
 
-        long seqNum = 0;
         long tradeCount = 0;
         int numTrades = config.getNumTrades(); // 0 = unlimited
         long intervalNanos = 1_000_000_000L / config.getTicksPerSecond();
@@ -96,29 +111,27 @@ public class LVWRChaosSimulator implements Runnable {
 
                 // Generate the tick (or handle special failure modes)
                 if (failure == FailureType.DISCONNECT) {
-                    handleDisconnect(seqNum);
-                    seqNum++;
+                    handleDisconnect();
                     tradeCount++;
                     ticksSent.incrementAndGet();
-                    failuresInjected.incrementAndGet();
+                    failureCountsByType.get(FailureType.DISCONNECT.name()).incrementAndGet();
                 } else if (failure == FailureType.RECONNECT_STORM) {
-                    handleReconnectStorm(state, seqNum);
-                    seqNum++;
+                    handleReconnectStorm();
                     tradeCount++;
                     ticksSent.incrementAndGet();
-                    failuresInjected.incrementAndGet();
+                    failureCountsByType.get(FailureType.RECONNECT_STORM.name()).incrementAndGet();
                 } else if (failure == FailureType.THROTTLE_BURST) {
-                    seqNum = handleThrottleBurst(state, seqNum);
+                    handleThrottleBurst(state);
                     tradeCount++;
-                    failuresInjected.incrementAndGet();
+                    failureCountsByType.get(FailureType.THROTTLE_BURST.name()).incrementAndGet();
                 } else {
-                    Tick tick = buildTick(state, instrId, seqNum, failure);
+                    Tick tick = buildTick(state, instrId, failure);
+                    // Count the failure even when the tick is null (e.g. MALFORMED_PAYLOAD)
+                    if (failure != null) failureCountsByType.get(failure.name()).incrementAndGet();
                     if (tick != null) {
                         tickConsumer.accept(tick);
                         ticksSent.incrementAndGet();
-                        if (failure != null) failuresInjected.incrementAndGet();
                     }
-                    seqNum++;
                     tradeCount++;
                 }
 
@@ -136,7 +149,7 @@ public class LVWRChaosSimulator implements Runnable {
             log.info("LVWR_T simulator stopped {} {} {}",
                     StructuredArguments.keyValue("feedId", feedId),
                     StructuredArguments.keyValue("ticksSent", ticksSent.get()),
-                    StructuredArguments.keyValue("failuresInjected", failuresInjected.get()));
+                    StructuredArguments.keyValue("totalFailures", getTotalFailuresInjected()));
         }
     }
 
@@ -152,12 +165,34 @@ public class LVWRChaosSimulator implements Runnable {
         return ticksSent.get();
     }
 
-    public long getFailuresInjected() {
-        return failuresInjected.get();
+    /** Returns per-failure-type injection counts (all 12 types, zero if not injected). */
+    public Map<String, Long> getFailuresInjected() {
+        Map<String, Long> snapshot = new LinkedHashMap<>();
+        for (FailureType ft : FailureType.values()) {
+            snapshot.put(ft.name(), failureCountsByType.get(ft.name()).get());
+        }
+        return snapshot;
+    }
+
+    /** Returns total failures across all types (convenience for logging). */
+    public long getTotalFailuresInjected() {
+        return failureCountsByType.values().stream().mapToLong(AtomicLong::get).sum();
     }
 
     public void updateConfig(ScenarioConfig newConfig) {
+        ScenarioConfig old = this.config;
+        boolean modeChanged = newConfig.getMode() != old.getMode();
+        boolean scenarioTargetChanged = newConfig.getMode() == SimulatorMode.SCENARIO
+                && newConfig.getTargetScenario() != old.getTargetScenario();
+
         this.config = newConfig;
+
+        // Reset per-type counters when the mode changes or when the SCENARIO target
+        // switches — the caller selected a specific fault for isolated testing and old
+        // counts from a prior mode run must not pollute the FAILURES INJECTED panel.
+        if (modeChanged || scenarioTargetChanged) {
+            failureCountsByType.values().forEach(c -> c.set(0));
+        }
     }
 
     public ScenarioConfig getConfig() {
@@ -166,7 +201,12 @@ public class LVWRChaosSimulator implements Runnable {
 
     // --- Internal tick construction ---
 
-    private Tick buildTick(InstrumentState state, int instrId, long seqNum, FailureType failure) {
+    /**
+     * Build a tick for the given instrument and failure type.
+     * Uses per-instrument sequence numbers so each symbol's seqNums are dense and
+     * consecutive (1, 2, 3…), preventing false gap events in the CompletenessValidator.
+     */
+    private Tick buildTick(InstrumentState state, int instrId, FailureType failure) {
         BigDecimal price = state.nextPrice();
         BigDecimal volume = randomVolume();
         long syntheticLatencyMs = 2 + (long) (Math.random() * 18); // 2–19 ms
@@ -174,57 +214,97 @@ public class LVWRChaosSimulator implements Runnable {
         String symbol = String.valueOf(instrId);
 
         if (failure == null) {
-            return adapter.buildTick(feedId, symbol, price, volume, seqNum, syntheticLatencyMs, null);
+            long seq = state.nextSeqNum();
+            Tick t = adapter.buildTick(feedId, symbol, price, volume, seq, syntheticLatencyMs, null);
+            state.setLastExchangeTimestamp(t.getExchangeTimestamp());
+            return t;
         }
 
         return switch (failure) {
             case NEGATIVE_PRICE -> {
                 BigDecimal negPrice = new BigDecimal("-0.125");
-                yield adapter.buildTick(feedId, symbol, negPrice, volume, seqNum, syntheticLatencyMs, failure);
+                long seq = state.nextSeqNum();
+                Tick t = adapter.buildTick(feedId, symbol, negPrice, volume, seq, syntheticLatencyMs, failure);
+                state.setLastExchangeTimestamp(t.getExchangeTimestamp());
+                yield t;
             }
             case PRICE_SPIKE -> {
                 BigDecimal spikePrice = price.multiply(new BigDecimal("1.14"), MC); // +14%
                 state.setLastPrice(spikePrice);
-                yield adapter.buildTick(feedId, symbol, spikePrice, volume, seqNum, syntheticLatencyMs, failure);
+                long seq = state.nextSeqNum();
+                Tick t = adapter.buildTick(feedId, symbol, spikePrice, volume, seq, syntheticLatencyMs, failure);
+                state.setLastExchangeTimestamp(t.getExchangeTimestamp());
+                yield t;
             }
             case SEQUENCE_GAP -> {
-                long gappedSeq = seqNum + 500_000; // Skip 500,000 sequence numbers
-                Tick t = adapter.buildTick(feedId, symbol, price, volume, gappedSeq, syntheticLatencyMs, failure);
+                // Advance the per-symbol counter by 5 extra to create a detectable gap.
+                // The CompletenessValidator will see seqNum jump by 6 (5 skipped + 1 new),
+                // recording 5 missing seqNums per gap event. This keeps the missing count
+                // proportional to the fault injection rate (Fix 5).
+                state.advanceSeqNum(5);
+                long seq = state.nextSeqNum();
+                Tick t = adapter.buildTick(feedId, symbol, price, volume, seq, syntheticLatencyMs, failure);
+                state.setLastExchangeTimestamp(t.getExchangeTimestamp());
                 yield t;
             }
             case DUPLICATE_TICK -> {
-                Tick orig = adapter.buildTick(feedId, symbol, price, volume, seqNum, syntheticLatencyMs, failure);
+                long seq = state.nextSeqNum();
+                Tick orig = adapter.buildTick(feedId, symbol, price, volume, seq, syntheticLatencyMs, failure);
+                state.setLastExchangeTimestamp(orig.getExchangeTimestamp());
                 tickConsumer.accept(orig); // emit original
                 ticksSent.incrementAndGet();
-                yield adapter.buildTick(feedId, symbol, price, volume, seqNum, syntheticLatencyMs, failure); // duplicate
+                yield adapter.buildTick(feedId, symbol, price, volume, seq, syntheticLatencyMs, failure); // duplicate
             }
             case OUT_OF_ORDER -> {
-                long outOfOrderSeq = Math.max(0, seqNum - 10);
-                yield adapter.buildTick(feedId, symbol, price, volume, outOfOrderSeq, syntheticLatencyMs, failure);
+                // Use an ascending seqNum so the idempotency guard in validators does not
+                // discard the tick. The out-of-order condition is signalled by setting the
+                // exchange timestamp to be BEFORE the previous tick's exchange timestamp for
+                // this symbol — exactly what OrderingValidator checks.
+                long seq = state.nextSeqNum();
+                Tick t = adapter.buildTick(feedId, symbol, price, volume, seq, syntheticLatencyMs, failure);
+                Instant prevExchange = state.getLastExchangeTimestamp();
+                if (prevExchange != null) {
+                    t.setExchangeTimestamp(prevExchange.minusMillis(50));
+                }
+                // Do not update lastExchangeTimestamp — the next clean tick stays in order.
+                yield t;
             }
-            case STALE_TIMESTAMP -> adapter.buildStaleTick(feedId, symbol, price, volume, seqNum);
+            case STALE_TIMESTAMP -> {
+                long seq = state.nextSeqNum();
+                Tick t = adapter.buildStaleTick(feedId, symbol, price, volume, seq);
+                state.setLastExchangeTimestamp(t.getExchangeTimestamp());
+                yield t;
+            }
             case MALFORMED_PAYLOAD -> null; // null tick — signals CompletenessValidator of missing data
             case SYMBOL_MISMATCH -> {
                 // Aggregate instrument 126 with wrong source instrument ID
-                yield adapter.buildTick(feedId, "126", price, volume, seqNum, syntheticLatencyMs, failure);
+                long seq = state.nextSeqNum();
+                yield adapter.buildTick(feedId, "126", price, volume, seq, syntheticLatencyMs, failure);
             }
             case CUMVOL_BACKWARD -> {
                 state.decreaseCumVol(200);
-                yield adapter.buildTick(feedId, symbol, price, volume, seqNum, syntheticLatencyMs, failure);
+                long seq = state.nextSeqNum();
+                Tick t = adapter.buildTick(feedId, symbol, price, volume, seq, syntheticLatencyMs, failure);
+                state.setLastExchangeTimestamp(t.getExchangeTimestamp());
+                yield t;
             }
-            default -> adapter.buildTick(feedId, symbol, price, volume, seqNum, syntheticLatencyMs, failure);
+            default -> {
+                long seq = state.nextSeqNum();
+                Tick t = adapter.buildTick(feedId, symbol, price, volume, seq, syntheticLatencyMs, failure);
+                state.setLastExchangeTimestamp(t.getExchangeTimestamp());
+                yield t;
+            }
         };
     }
 
-    private void handleDisconnect(long seqNum) throws InterruptedException {
-        log.info("LVWR_T injecting DISCONNECT {} {}",
-                StructuredArguments.keyValue("feedId", feedId),
-                StructuredArguments.keyValue("seqNum", seqNum));
+    private void handleDisconnect() throws InterruptedException {
+        log.info("LVWR_T injecting DISCONNECT {}",
+                StructuredArguments.keyValue("feedId", feedId));
         // Pause emission for ~8 seconds — ThroughputValidator will detect the drop
         Thread.sleep(8_000);
     }
 
-    private void handleReconnectStorm(InstrumentState state, long seqNum) throws InterruptedException {
+    private void handleReconnectStorm() throws InterruptedException {
         long now = System.currentTimeMillis();
         if (disconnectWindowStart == 0 || now - disconnectWindowStart > 30_000) {
             disconnectWindowStart = now;
@@ -232,29 +312,29 @@ public class LVWRChaosSimulator implements Runnable {
         }
         disconnectCount++;
 
-        log.info("LVWR_T injecting RECONNECT_STORM {} {} {}",
+        log.info("LVWR_T injecting RECONNECT_STORM {} {}",
                 StructuredArguments.keyValue("feedId", feedId),
-                StructuredArguments.keyValue("disconnectCount", disconnectCount),
-                StructuredArguments.keyValue("seqNum", seqNum));
+                StructuredArguments.keyValue("disconnectCount", disconnectCount));
 
         Thread.sleep(500); // brief pause per reconnect event
     }
 
-    private long handleThrottleBurst(InstrumentState state, long seqNum) {
-        // Emit 800 ticks with the same timestamp — BackpressureQueue DROP_OLDEST kicks in
-        Instant burstTime = java.time.Instant.now();
+    private void handleThrottleBurst(InstrumentState state) {
+        // Emit 800 ticks with the same timestamp — BackpressureQueue DROP_OLDEST kicks in.
+        // Each instrument uses its own per-symbol seqNum so continuity is preserved.
+        Instant burstTime = Instant.now();
         BigDecimal price = state.nextPrice();
         BigDecimal volume = randomVolume();
         for (int i = 0; i < 800; i++) {
-            Tick t = adapter.buildTick(feedId, String.valueOf(
-                    EMISSION_ORDER[(i % (EMISSION_ORDER.length - 1)) + 1]),
-                    price, volume, seqNum + i, 2, FailureType.THROTTLE_BURST);
+            int eid = EMISSION_ORDER[(i % (EMISSION_ORDER.length - 1)) + 1];
+            InstrumentState instrState = instruments.get(eid);
+            long seq = instrState.nextSeqNum();
+            Tick t = adapter.buildTick(feedId, String.valueOf(eid), price, volume, seq, 2, FailureType.THROTTLE_BURST);
             t.setReceivedTimestamp(burstTime); // same timestamp for all burst ticks
             t.setExchangeTimestamp(burstTime.minusMillis(2));
             tickConsumer.accept(t);
             ticksSent.incrementAndGet();
         }
-        return seqNum + 800;
     }
 
     private void emitPhase1HeartbeatsIfEnabled() {
@@ -263,6 +343,7 @@ public class LVWRChaosSimulator implements Runnable {
             InstrumentState state = instruments.get(instrId);
             if (state == null) continue;
             BigDecimal price = state.getLastPrice();
+            // Heartbeats use seqNum=0 (pre-open; real ticks start at seqNum=1 via nextSeqNum())
             Tick hbTick = adapter.buildTick(feedId, String.valueOf(instrId), price,
                     BigDecimal.ZERO, 0L, 5L, null);
             tickConsumer.accept(hbTick);
@@ -319,13 +400,19 @@ public class LVWRChaosSimulator implements Runnable {
         private BigDecimal cumVol = BigDecimal.ZERO;
         private final Random rng = new Random();
 
+        /** Per-instrument sequence counter. Starts at 0; nextSeqNum() returns 1 on first call. */
+        private long seqNum = 0;
+
+        /** Last exchange timestamp emitted for this instrument — used by OUT_OF_ORDER injection. */
+        private Instant lastExchangeTimestamp;
+
         InstrumentState(String symbol, BigDecimal seedPrice, BigDecimal volatility) {
             this.symbol = symbol;
             this.lastPrice = seedPrice;
             this.volatility = volatility;
         }
 
-        /** GBM price walk with zero drift, per-instrument volatility, bounded to ±15% of seed. */
+        /** GBM price walk with zero drift, per-instrument volatility, bounded to > 0. */
         BigDecimal nextPrice() {
             double z = rng.nextGaussian();
             BigDecimal move = volatility.multiply(new BigDecimal(z), MC);
@@ -346,5 +433,17 @@ public class LVWRChaosSimulator implements Runnable {
         void decreaseCumVol(long amount) { cumVol = cumVol.subtract(new BigDecimal(amount)); }
 
         String getSymbol() { return symbol; }
+
+        /** Returns the next sequence number (first call returns 1). */
+        long nextSeqNum() { return ++seqNum; }
+
+        /**
+         * Advance the seqNum counter by {@code extra} positions without emitting a tick.
+         * Used by SEQUENCE_GAP injection to create a detectable gap.
+         */
+        void advanceSeqNum(long extra) { seqNum += extra; }
+
+        Instant getLastExchangeTimestamp() { return lastExchangeTimestamp; }
+        void setLastExchangeTimestamp(Instant ts) { this.lastExchangeTimestamp = ts; }
     }
 }

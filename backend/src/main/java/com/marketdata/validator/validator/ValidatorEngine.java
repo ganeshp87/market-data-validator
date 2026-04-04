@@ -10,8 +10,8 @@ import org.slf4j.LoggerFactory;
 
 import org.springframework.stereotype.Component;
 
-import java.util.List;
-import java.util.Map;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -39,6 +39,10 @@ public class ValidatorEngine {
     private final List<Consumer<List<ValidationResult>>> listeners = new CopyOnWriteArrayList<>();
     private final AtomicLong tickCount = new AtomicLong(0);
     private ScheduledExecutorService throughputScheduler;
+
+    // Per-feed validation scoping (Fix 8): feedId → isolated validator set + tick counter
+    private final ConcurrentHashMap<String, List<Validator>> feedValidators = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, AtomicLong> feedTickCounts = new ConcurrentHashMap<>();
 
     public ValidatorEngine(List<Validator> validators) {
         this.validators = List.copyOf(validators); // Defensive copy — immutable after construction
@@ -75,6 +79,7 @@ public class ValidatorEngine {
     /**
      * Process a single tick through all validators.
      * Called for every tick from every feed.
+     * Fans out to both the global validator set and the per-feed validator set (Fix 8).
      */
     public void onTick(Tick tick) {
         tickCount.incrementAndGet();
@@ -84,6 +89,7 @@ public class ValidatorEngine {
             tick.setTraceId(java.util.UUID.randomUUID().toString());
         }
 
+        // Global validators
         for (Validator v : validators) {
             try {
                 v.onTick(tick);
@@ -91,7 +97,21 @@ public class ValidatorEngine {
             } catch (Exception e) {
                 log.error("Validator {} threw exception on tick seq={}: {}",
                         v.getArea(), tick.getSequenceNum(), e.getMessage(), e);
-                // Don't let one broken validator stop others
+            }
+        }
+
+        // Per-feed validators (Fix 8) — lazily created on first tick per feed
+        String feedId = tick.getFeedId();
+        if (feedId != null && !feedId.isBlank()) {
+            feedTickCounts.computeIfAbsent(feedId, k -> new AtomicLong(0)).incrementAndGet();
+            List<Validator> perFeed = feedValidators.computeIfAbsent(feedId, k -> createValidatorSet());
+            for (Validator v : perFeed) {
+                try {
+                    v.onTick(tick);
+                } catch (Exception e) {
+                    log.error("Per-feed validator {} threw on tick seq={} feedId={}: {}",
+                            v.getArea(), tick.getSequenceNum(), feedId, e.getMessage(), e);
+                }
             }
         }
 
@@ -116,12 +136,49 @@ public class ValidatorEngine {
     }
 
     /**
-     * Reset all validators — clears all state.
+     * Get results for a specific feed (Fix 8).
+     * Returns null if no ticks have been seen for this feedId.
+     */
+    public List<ValidationResult> getResults(String feedId) {
+        List<Validator> perFeed = feedValidators.get(feedId);
+        if (perFeed == null) return null;
+        return perFeed.stream().map(Validator::getResult).collect(Collectors.toList());
+    }
+
+    /**
+     * Get area → result map for a specific feed (Fix 8).
+     * Returns null if no ticks have been seen for this feedId.
+     */
+    public Map<String, ValidationResult> getResultsByArea(String feedId) {
+        List<Validator> perFeed = feedValidators.get(feedId);
+        if (perFeed == null) return null;
+        return perFeed.stream().collect(Collectors.toMap(Validator::getArea, Validator::getResult));
+    }
+
+    /**
+     * Get the tick count for a specific feed (Fix 8).
+     */
+    public long getTickCount(String feedId) {
+        AtomicLong counter = feedTickCounts.get(feedId);
+        return counter != null ? counter.get() : 0;
+    }
+
+    /**
+     * Get the set of feedIds that have been seen so far (Fix 8).
+     */
+    public Set<String> getKnownFeedIds() {
+        return Set.copyOf(feedValidators.keySet());
+    }
+
+    /**
+     * Reset all validators — clears all state (global + per-feed).
      */
     public void reset() {
         validators.forEach(Validator::reset);
         tickCount.set(0);
-        log.info("All validators reset");
+        feedValidators.clear();
+        feedTickCounts.clear();
+        log.info("All validators reset (global + per-feed)");
     }
 
     /**
@@ -221,5 +278,22 @@ public class ValidatorEngine {
                 log.error("Listener threw exception: {}", e.getMessage(), e);
             }
         }
+    }
+
+    /**
+     * Create a fresh validator set for per-feed scoping (Fix 8).
+     * Instantiates the same 8 validator types as the global set.
+     */
+    private List<Validator> createValidatorSet() {
+        return List.of(
+                new AccuracyValidator(),
+                new OrderingValidator(),
+                new LatencyValidator(),
+                new CompletenessValidator(),
+                new ThroughputValidator(),
+                new ReconnectionValidator(),
+                new SubscriptionValidator(),
+                new StatefulValidator()
+        );
     }
 }

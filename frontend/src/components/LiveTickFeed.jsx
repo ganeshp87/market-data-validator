@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import useSSE from '../hooks/useSSE';
 
 /**
@@ -9,9 +9,10 @@ import useSSE from '../hooks/useSSE';
  *   - Auto-scrolls, keeps last 500 rows
  *   - Pause button stops auto-scroll
  *   - Filter by symbol
+ *   - Filter by feed (prevents LVWR numeric instrument IDs mixing with Binance symbols)
  *   - Export visible data
  *
- * Uses: useSSE('/api/stream/ticks', 'tick') for live data
+ * Uses: useSSE('/api/stream/ticks?feedId=...', 'tick') for live data
  */
 
 const MAX_ROWS = 500;
@@ -19,30 +20,45 @@ const MAX_ROWS = 500;
 export default function LiveTickFeed() {
   const [paused, setPaused] = useState(false);
   const [symbolFilter, setSymbolFilter] = useState('');
+  const [selectedFeedId, setSelectedFeedId] = useState('');  // '' = All feeds
+  const [feeds, setFeeds] = useState([]);
   const tableEndRef = useRef(null);
 
-  // Build URL with optional symbol filter
-  const url = symbolFilter
-    ? `/api/stream/ticks?symbol=${encodeURIComponent(symbolFilter)}`
-    : '/api/stream/ticks';
+  // Load available connections once on mount so the feed selector is populated
+  useEffect(() => {
+    fetch('/api/feeds')
+      .then((r) => r.ok ? r.json() : [])
+      .then((list) => setFeeds(list))
+      .catch(() => {});
+  }, []);
 
-  const { data, connected, error, clear } = useSSE(url, 'tick', {
+  // Memoize SSE URL so the hook only reconnects when filters actually change
+  const sseUrl = useMemo(() => {
+    const params = new URLSearchParams();
+    if (selectedFeedId) params.set('feedId', selectedFeedId);
+    if (symbolFilter)   params.set('symbol', symbolFilter);
+    const qs = params.toString();
+    return qs ? `/api/stream/ticks?${qs}` : '/api/stream/ticks';
+  }, [selectedFeedId, symbolFilter]);
+
+  const { data: rawData, connected, error, clear } = useSSE(sseUrl, 'tick', {
     maxItems: MAX_ROWS,
   });
 
-  // Auto-scroll to bottom when new data arrives (unless paused)
-  useEffect(() => {
-    if (!paused && tableEndRef.current && tableEndRef.current.scrollIntoView) {
-      tableEndRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [data.length, paused]);
+  // Client-side feedId filter — belt-and-suspenders for server-side filtering.
+  // Ensures ticks from other feeds never leak through even if SSE reconnection
+  // races or proxy strips query params.
+  const data = useMemo(() => {
+    if (!selectedFeedId) return rawData;
+    return rawData.filter((t) => t.feedId === selectedFeedId);
+  }, [rawData, selectedFeedId]);
 
   const handleExport = useCallback(() => {
-    const header = 'Time,Symbol,Price,Volume,Seq,Latency(ms)\n';
+    const header = 'Time,Symbol,Price,Volume,Seq,Latency(ms),Feed\n';
     const rows = data
       .map(
         (t) =>
-          `${formatTime(t.exchangeTimestamp)},${t.symbol},${t.price},${t.volume},${t.sequenceNum},${t.latency}`
+          `${formatTime(t.exchangeTimestamp)},${t.symbol},${t.price},${t.volume},${t.sequenceNum},${t.latency},${t.feedId ?? ''}`
       )
       .join('\n');
 
@@ -54,6 +70,18 @@ export default function LiveTickFeed() {
     URL.revokeObjectURL(a.href);
   }, [data]);
 
+  // Auto-scroll to bottom when new data arrives (unless paused)
+  useEffect(() => {
+    if (!paused && tableEndRef.current && tableEndRef.current.scrollIntoView) {
+      tableEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [data.length, paused]);
+
+  // Label shown next to the status dot
+  const feedLabel = selectedFeedId
+    ? (feeds.find((f) => f.id === selectedFeedId)?.name ?? selectedFeedId)
+    : 'All feeds';
+
   return (
     <div className="live-tick-feed">
       <div className="feed-toolbar">
@@ -62,9 +90,25 @@ export default function LiveTickFeed() {
           <span>{connected ? 'Live' : 'Disconnected'}</span>
           {error && <span className="feed-error">{error.message}</span>}
           <span className="tick-count">{data.length} ticks</span>
+          <span className="feed-source-label">— {feedLabel}</span>
         </div>
 
         <div className="feed-controls">
+          {/* Feed selector — isolates one connection so cross-feed symbol mixing is avoided */}
+          <select
+            className="feed-filter-select"
+            value={selectedFeedId}
+            onChange={(e) => { setSelectedFeedId(e.target.value); clear(); }}
+            aria-label="Filter by feed"
+          >
+            <option value="">All feeds</option>
+            {feeds.map((f) => (
+              <option key={f.id} value={f.id}>
+                {f.name} ({f.adapterType})
+              </option>
+            ))}
+          </select>
+
           <input
             type="text"
             className="symbol-filter"

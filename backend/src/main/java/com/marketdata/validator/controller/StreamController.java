@@ -94,35 +94,44 @@ public class StreamController {
 
     /**
      * GET /api/stream/ticks — live tick stream.
-     * Optional query param: ?symbol=BTCUSDT to filter by symbol.
+     * Optional query params:
+     *   ?symbol=BTCUSDT  — filter by symbol (case-insensitive)
+     *   ?feedId=abc123   — filter to one feed connection (prevents LVWR numeric symbols
+     *                      appearing in the Binance view when both feeds are running)
      */
     @GetMapping("/ticks")
-    public SseEmitter streamTicks(@RequestParam(required = false) String symbol) {
+    public SseEmitter streamTicks(
+            @RequestParam(required = false) String symbol,
+            @RequestParam(required = false) String feedId) {
         SseEmitter emitter = createEmitter(tickEmitters);
 
-        // If symbol filter is set, wrap with a filtered listener
         if (symbol != null && !symbol.isBlank()) {
-            // Store the filter in emitter attributes — we check it during broadcast
-            emitter.onCompletion(() -> tickEmitters.remove(emitter));
-            emitter.onTimeout(() -> tickEmitters.remove(emitter));
-            emitter.onError(e -> tickEmitters.remove(emitter));
-            // Tag the emitter with the symbol filter (using a custom wrapper wouldn't scale,
-            // so we use a simple approach: store symbol in a concurrent map)
             symbolFilters.put(emitter, symbol.toUpperCase());
+        }
+        if (feedId != null && !feedId.isBlank()) {
+            feedIdFilters.put(emitter, feedId);
         }
 
         return emitter;
     }
 
-    // Symbol filter map — tracks which emitters have symbol filters
+    // Per-emitter filter maps
     private final ConcurrentHashMap<SseEmitter, String> symbolFilters = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<SseEmitter, String> feedIdFilters  = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<SseEmitter, String> validationFeedFilters = new ConcurrentHashMap<>();
 
     /**
      * GET /api/stream/validation — live validation results (all 8 areas).
+     * Optional ?feedId= scopes results to a single feed (Fix 8).
      */
     @GetMapping("/validation")
-    public SseEmitter streamValidation() {
-        return createEmitter(validationEmitters);
+    public SseEmitter streamValidation(
+            @RequestParam(required = false) String feedId) {
+        SseEmitter emitter = createEmitter(validationEmitters);
+        if (feedId != null && !feedId.isBlank()) {
+            validationFeedFilters.put(emitter, feedId);
+        }
+        return emitter;
     }
 
     /**
@@ -179,10 +188,15 @@ public class StreamController {
 
         for (SseEmitter emitter : tickEmitters) {
             try {
-                // Check symbol filter
-                String filter = symbolFilters.get(emitter);
-                if (filter != null && !filter.equals(tick.getSymbol())) {
-                    continue; // Skip — doesn't match filter
+                // Apply feedId filter — skip if tick is from a different feed
+                String feedFilter = feedIdFilters.get(emitter);
+                if (feedFilter != null && !feedFilter.equals(tick.getFeedId())) {
+                    continue;
+                }
+                // Apply symbol filter
+                String symFilter = symbolFilters.get(emitter);
+                if (symFilter != null && !symFilter.equals(tick.getSymbol())) {
+                    continue;
                 }
 
                 emitter.send(SseEmitter.event()
@@ -197,7 +211,8 @@ public class StreamController {
     // --- Internal: Validation handling ---
 
     private void onValidationUpdate(List<ValidationResult> results) {
-        Map<String, Object> payload = Map.of(
+        // Global payload (no feed filter)
+        Map<String, Object> globalPayload = Map.of(
                 "timestamp", Instant.now(),
                 "results", engine.getResultsByArea(),
                 "overallStatus", computeOverallStatus(results),
@@ -206,6 +221,22 @@ public class StreamController {
 
         for (SseEmitter emitter : validationEmitters) {
             try {
+                String feedFilter = validationFeedFilters.get(emitter);
+                Map<String, Object> payload;
+                if (feedFilter != null) {
+                    // Per-feed scoped results (Fix 8)
+                    Map<String, ValidationResult> feedResults = engine.getResultsByArea(feedFilter);
+                    if (feedResults == null) feedResults = Map.of();
+                    List<ValidationResult> feedResultList = List.copyOf(feedResults.values());
+                    payload = Map.of(
+                            "timestamp", Instant.now(),
+                            "results", feedResults,
+                            "overallStatus", computeOverallStatus(feedResultList),
+                            "ticksProcessed", engine.getTickCount(feedFilter)
+                    );
+                } else {
+                    payload = globalPayload;
+                }
                 emitter.send(SseEmitter.event()
                         .name("validation")
                         .data(payload));
@@ -290,12 +321,24 @@ public class StreamController {
         emitter.onTimeout(() -> removeEmitter(emitter, emitterList));
         emitter.onError(e -> removeEmitter(emitter, emitterList));
 
+        // Send an initial comment to flush the HTTP response headers immediately.
+        // Without this, some proxies (e.g. Vite dev server) buffer the response
+        // until the first real event arrives, preventing the browser's EventSource
+        // from firing its 'open' event and showing as 'Disconnected'.
+        try {
+            emitter.send(SseEmitter.event().comment("connected"));
+        } catch (IOException e) {
+            removeEmitter(emitter, emitterList);
+        }
+
         return emitter;
     }
 
     private void removeEmitter(SseEmitter emitter, List<SseEmitter> emitterList) {
         emitterList.remove(emitter);
         symbolFilters.remove(emitter);
+        feedIdFilters.remove(emitter);
+        validationFeedFilters.remove(emitter);
     }
 
     // --- Internal: Formatting ---

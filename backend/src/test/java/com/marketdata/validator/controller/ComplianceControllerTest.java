@@ -92,6 +92,94 @@ class ComplianceControllerTest {
         assertThat(body.get("art64PreTradeTransparency")).isEqualTo("UNKNOWN");
     }
 
+    // --- ART 64: Pre-trade transparency (maps directly from ACCURACY status) ---
+
+    @Test
+    void art64PassWhenAccuracyIsPass() {
+        ValidationResult accuracy = ValidationResult.pass(Area.ACCURACY, "all prices valid", 99.99, 99.99);
+        when(engine.getResultsByArea()).thenReturn(Map.of("ACCURACY", accuracy));
+
+        ResponseEntity<Map<String, Object>> response = controller.getCompliance();
+        assertThat(response.getBody().get("art64PreTradeTransparency")).isEqualTo("PASS");
+    }
+
+    @Test
+    void art64FailWhenAccuracyIsFail() {
+        ValidationResult accuracy = ValidationResult.fail(Area.ACCURACY, "invalid prices detected", 85.0, 99.99);
+        when(engine.getResultsByArea()).thenReturn(Map.of("ACCURACY", accuracy));
+
+        ResponseEntity<Map<String, Object>> response = controller.getCompliance();
+        assertThat(response.getBody().get("art64PreTradeTransparency")).isEqualTo("FAIL");
+    }
+
+    @Test
+    void art64WarnWhenAccuracyIsWarn() {
+        ValidationResult accuracy = ValidationResult.warn(Area.ACCURACY, "borderline accuracy", 99.1, 99.99);
+        when(engine.getResultsByArea()).thenReturn(Map.of("ACCURACY", accuracy));
+
+        ResponseEntity<Map<String, Object>> response = controller.getCompliance();
+        assertThat(response.getBody().get("art64PreTradeTransparency")).isEqualTo("WARN");
+    }
+
+    // --- RTS 22: Trade ID uniqueness (maps from ORDERING validator) ---
+
+    @Test
+    void rts22PassWhenOrderingStatusIsPass() {
+        ValidationResult ordering = ValidationResult.pass(Area.ORDERING, "all in order", 100.0, 99.99);
+        when(engine.getResultsByArea()).thenReturn(Map.of("ORDERING", ordering));
+
+        ResponseEntity<Map<String, Object>> response = controller.getCompliance();
+        assertThat(response.getBody().get("rts22TradeIdUniqueness")).isEqualTo("PASS");
+    }
+
+    @Test
+    void rts22FailWhenDuplicateCountIsPositive() {
+        ValidationResult ordering = ValidationResult.warn(Area.ORDERING, "duplicates detected", 98.0, 99.99);
+        ordering.getDetails().put("duplicateCount", 5L);
+        when(engine.getResultsByArea()).thenReturn(Map.of("ORDERING", ordering));
+
+        ResponseEntity<Map<String, Object>> response = controller.getCompliance();
+        assertThat(response.getBody().get("rts22TradeIdUniqueness")).isEqualTo("FAIL");
+    }
+
+    @Test
+    void rts22FallsBackToStatusWhenNoDuplicateCountDetail() {
+        // WARN status, no duplicateCount in details → falls back to status name
+        ValidationResult ordering = ValidationResult.warn(Area.ORDERING, "out-of-order ticks", 98.5, 99.99);
+        when(engine.getResultsByArea()).thenReturn(Map.of("ORDERING", ordering));
+
+        ResponseEntity<Map<String, Object>> response = controller.getCompliance();
+        assertThat(response.getBody().get("rts22TradeIdUniqueness")).isEqualTo("WARN");
+    }
+
+    // --- OHLC Reconciliation (maps directly from STATEFUL status) ---
+
+    @Test
+    void ohlcPassWhenStatefulIsPass() {
+        ValidationResult stateful = ValidationResult.pass(Area.STATEFUL, "OHLC consistent", 99.99, 99.99);
+        when(engine.getResultsByArea()).thenReturn(Map.of("STATEFUL", stateful));
+
+        ResponseEntity<Map<String, Object>> response = controller.getCompliance();
+        assertThat(response.getBody().get("ohlcReconciliation")).isEqualTo("PASS");
+    }
+
+    @Test
+    void ohlcFailWhenStatefulIsFail() {
+        ValidationResult stateful = ValidationResult.fail(Area.STATEFUL, "OHLC inconsistency detected", 90.0, 99.99);
+        when(engine.getResultsByArea()).thenReturn(Map.of("STATEFUL", stateful));
+
+        ResponseEntity<Map<String, Object>> response = controller.getCompliance();
+        assertThat(response.getBody().get("ohlcReconciliation")).isEqualTo("FAIL");
+    }
+
+    @Test
+    void ohlcUnknownWhenStatefulMissing() {
+        when(engine.getResultsByArea()).thenReturn(Map.of());
+
+        ResponseEntity<Map<String, Object>> response = controller.getCompliance();
+        assertThat(response.getBody().get("ohlcReconciliation")).isEqualTo("UNKNOWN");
+    }
+
     @Test
     void auditTrailWarnForPartialCompleteness() {
         ValidationResult completeness = new ValidationResult(

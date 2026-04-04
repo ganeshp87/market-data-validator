@@ -46,12 +46,18 @@ class LVWRChaosSimulatorTest {
         config.setFailureRate(1.0); // inject on every tick
         config.setNumTrades(20);
         List<Tick> received = new ArrayList<>();
-        LVWRChaosSimulator sim = new LVWRChaosSimulator("feed-2", config, received::add);
+
+        // Use a deterministic ScenarioEngine (always picks PRICE_SPIKE — index 0 — and never
+        // DISCONNECT which would sleep 8 s and blow past the 5 s join timeout).
+        ScenarioEngine deterministicEngine = new ScenarioEngine(new java.util.Random() {
+            @Override public double nextDouble() { return 0.0; }  // always < failureRate
+            @Override public int nextInt(int n)  { return 0;   }  // always PRICE_SPIKE (index 0)
+        });
+        LVWRChaosSimulator sim = new LVWRChaosSimulator("feed-2", config, received::add, deterministicEngine);
 
         Thread t = Thread.ofVirtual().start(sim);
         t.join(5_000);
 
-        // At 100% failure rate at least some ticks should have a failureType set
         long withFailure = received.stream()
                 .filter(tick -> tick != null && tick.getFailureType() != null)
                 .count();
@@ -192,7 +198,8 @@ class LVWRChaosSimulatorTest {
         Thread t = Thread.ofVirtual().start(sim);
         t.join(5_000);
 
-        assertThat(sim.getFailuresInjected()).isGreaterThanOrEqualTo(0);
+        assertThat(sim.getFailuresInjected()).isNotNull();
+        assertThat(sim.getFailuresInjected().values().stream().mapToLong(Long::longValue).sum()).isGreaterThanOrEqualTo(0);
     }
 
     @Test
@@ -278,7 +285,7 @@ class LVWRChaosSimulatorTest {
     }
 
     @Test
-    void sequenceGapInjectsLargeSeqJump() throws Exception {
+    void sequenceGapInjectsSeqJumpAboveNaturalNext() throws Exception {
         config.setMode(SimulatorMode.SCENARIO);
         config.setTargetScenario(FailureType.SEQUENCE_GAP);
         config.setFailureRate(1.0);
@@ -289,11 +296,89 @@ class LVWRChaosSimulatorTest {
         Thread t = Thread.ofVirtual().start(sim);
         t.join(5_000);
 
-        // Gap ticks should have seqNum >= 500,000 (skipped)
+        // Each SEQUENCE_GAP tick skips 5 seqNums: the first tick for any symbol gets
+        // seqNum = 6 (advance 5 + nextSeqNum() = 1, total 6) instead of natural 1.
+        // This is large enough for the CompletenessValidator to detect a gap while keeping
+        // missingSequenceCount proportional to the fault rate (not 500,000x inflated).
         List<Tick> gaps = received.stream()
                 .filter(tick -> tick != null && FailureType.SEQUENCE_GAP.name().equals(tick.getFailureType()))
                 .toList();
         assertThat(gaps).isNotEmpty();
-        gaps.forEach(tick -> assertThat(tick.getSequenceNum()).isGreaterThanOrEqualTo(500_000));
+        gaps.forEach(tick -> assertThat(tick.getSequenceNum()).isGreaterThan(1L));
+    }
+
+    /**
+     * Fix 7 — scenario mode counter isolation.
+     *
+     * When a running simulator switches from a mode that has accumulated failure counts
+     * (e.g. NOISY with STALE_TS, DUPLICATE, …) into SCENARIO mode, all failure counters
+     * must be reset to zero so the FAILURES INJECTED panel only reflects faults from
+     * the active SCENARIO run — not leftover counts from the previous mode.
+     */
+    @Test
+    void switchingToScenarioModeResetsFailureCounters() throws Exception {
+        // Phase 1: run NOISY at 100% rate so non-NEGATIVE_PRICE counters accumulate
+        config.setMode(SimulatorMode.NOISY);
+        config.setFailureRate(1.0);
+        config.setNumTrades(0); // unlimited — we stop it manually
+        config.setTicksPerSecond(1000);
+
+        ScenarioEngine deterministicEngine = new ScenarioEngine(new java.util.Random() {
+            @Override public double nextDouble() { return 0.0; }  // always < failureRate
+            @Override public int nextInt(int n)  { return 3;   }  // always STALE_TIMESTAMP (index 3)
+        });
+        LVWRChaosSimulator sim = new LVWRChaosSimulator("feed-fix7", config, tick -> {}, deterministicEngine);
+        Thread t = Thread.ofVirtual().start(sim);
+        Thread.sleep(50); // let NOISY accumulate some STALE_TIMESTAMP counts
+
+        assertThat(sim.getFailuresInjected().get(FailureType.STALE_TIMESTAMP.name()))
+                .as("NOISY phase must inject STALE_TIMESTAMP").isGreaterThan(0L);
+
+        // Phase 2: switch to SCENARIO / NEGATIVE_PRICE via updateConfig()
+        ScenarioConfig scenarioConfig = new ScenarioConfig();
+        scenarioConfig.setMode(SimulatorMode.SCENARIO);
+        scenarioConfig.setTargetScenario(FailureType.NEGATIVE_PRICE);
+        scenarioConfig.setFailureRate(1.0);
+        scenarioConfig.setTicksPerSecond(1000);
+        sim.updateConfig(scenarioConfig);
+        sim.stop();
+        t.join(2_000);
+
+        // All counters must be zero after the mode switch — Fix 7 isolation guarantee
+        sim.getFailuresInjected().forEach((type, count) ->
+                assertThat(count).as("counter for %s must be 0 after switching to SCENARIO", type).isEqualTo(0L)
+        );
+    }
+
+    @Test
+    void switchingScenarioTargetResetsFailureCounters() throws Exception {
+        // Phase 1: run SCENARIO / PRICE_SPIKE at 100% rate to build up PRICE_SPIKE counts
+        config.setMode(SimulatorMode.SCENARIO);
+        config.setTargetScenario(FailureType.PRICE_SPIKE);
+        config.setFailureRate(1.0);
+        config.setNumTrades(0);
+        config.setTicksPerSecond(1000);
+
+        LVWRChaosSimulator sim = new LVWRChaosSimulator("feed-fix7b", config, tick -> {});
+        Thread t = Thread.ofVirtual().start(sim);
+        Thread.sleep(50);
+
+        assertThat(sim.getFailuresInjected().get(FailureType.PRICE_SPIKE.name()))
+                .as("SCENARIO/PRICE_SPIKE phase must inject PRICE_SPIKE").isGreaterThan(0L);
+
+        // Phase 2: switch target to NEGATIVE_PRICE
+        ScenarioConfig changed = new ScenarioConfig();
+        changed.setMode(SimulatorMode.SCENARIO);
+        changed.setTargetScenario(FailureType.NEGATIVE_PRICE);
+        changed.setFailureRate(1.0);
+        changed.setTicksPerSecond(1000);
+        sim.updateConfig(changed);
+        sim.stop();
+        t.join(2_000);
+
+        // All counters must be zero — old PRICE_SPIKE counts must not leak into the new target's view
+        sim.getFailuresInjected().forEach((type, count) ->
+                assertThat(count).as("counter for %s must be 0 after changing SCENARIO target", type).isEqualTo(0L)
+        );
     }
 }
