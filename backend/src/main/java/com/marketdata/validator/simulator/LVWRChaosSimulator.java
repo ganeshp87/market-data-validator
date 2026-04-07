@@ -11,6 +11,8 @@ import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
@@ -53,6 +55,10 @@ public class LVWRChaosSimulator implements Runnable {
     private volatile ScenarioConfig config;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicLong ticksSent = new AtomicLong(0);
+    /** Counted down to zero in the run() finally block — used by waitForStop(). */
+    private final CountDownLatch stoppedLatch = new CountDownLatch(1);
+    /** Reference to the virtual thread running this simulator — set at start of run(). */
+    private volatile Thread runnerThread;
     /** Per-type failure injection counts — keyed by FailureType name */
     private final Map<String, AtomicLong> failureCountsByType = new ConcurrentHashMap<>();
 
@@ -80,6 +86,7 @@ public class LVWRChaosSimulator implements Runnable {
 
     @Override
     public void run() {
+        runnerThread = Thread.currentThread();
         running.set(true);
         scenarioEngine.reset();
 
@@ -146,6 +153,7 @@ public class LVWRChaosSimulator implements Runnable {
             Thread.currentThread().interrupt();
         } finally {
             running.set(false);
+            stoppedLatch.countDown();
             log.info("LVWR_T simulator stopped {} {} {}",
                     StructuredArguments.keyValue("feedId", feedId),
                     StructuredArguments.keyValue("ticksSent", ticksSent.get()),
@@ -155,6 +163,19 @@ public class LVWRChaosSimulator implements Runnable {
 
     public void stop() {
         running.set(false);
+        Thread t = runnerThread;
+        if (t != null) t.interrupt(); // wake from any blocking sleep (e.g. DISCONNECT 8s)
+    }
+
+    /**
+     * Block until the simulator's run() method exits, or until the timeout elapses.
+     *
+     * @param timeoutMs maximum time to wait in milliseconds
+     * @return true if the simulator stopped within the timeout, false if it timed out
+     * @throws InterruptedException if the calling thread is interrupted while waiting
+     */
+    public boolean waitForStop(long timeoutMs) throws InterruptedException {
+        return stoppedLatch.await(timeoutMs, TimeUnit.MILLISECONDS);
     }
 
     public boolean isRunning() {
@@ -300,8 +321,8 @@ public class LVWRChaosSimulator implements Runnable {
     private void handleDisconnect() throws InterruptedException {
         log.info("LVWR_T injecting DISCONNECT {}",
                 StructuredArguments.keyValue("feedId", feedId));
-        // Pause emission for ~8 seconds — ThroughputValidator will detect the drop
-        Thread.sleep(8_000);
+        // Pause emission for configured duration — ThroughputValidator will detect the drop
+        Thread.sleep(config.getDisconnectDurationMs());
     }
 
     private void handleReconnectStorm() throws InterruptedException {
@@ -316,7 +337,7 @@ public class LVWRChaosSimulator implements Runnable {
                 StructuredArguments.keyValue("feedId", feedId),
                 StructuredArguments.keyValue("disconnectCount", disconnectCount));
 
-        Thread.sleep(500); // brief pause per reconnect event
+        Thread.sleep(config.getReconnectPauseDurationMs()); // brief pause per reconnect event
     }
 
     private void handleThrottleBurst(InstrumentState state) {

@@ -367,6 +367,27 @@ class LatencyValidatorTest {
         assertThat(result.getStatus()).isEqualTo(ValidationResult.Status.PASS);
     }
 
+    // --- Linear interpolation: small buffer percentiles ---
+
+    @Test
+    void smallBufferPercentilesUseLinearInterpolation() {
+        // 10 values: 10, 20, 30, 40, 50, 60, 70, 80, 90, 100
+        validator.configure(Map.of("bufferSize", 100)); // large enough to not wrap
+        for (int i = 1; i <= 10; i++) {
+            feedTickWithLatency("BTCUSDT", i * 10L, i);
+        }
+
+        // p50: pos = 0.5 * 9 = 4.5 → lower=sorted[4]=50, upper=sorted[5]=60 → 55.0 → (long) 55
+        assertThat(validator.getP50())
+                .as("p50 of [10..100] with 10 values must be 55 (interpolated between 50 and 60)")
+                .isEqualTo(55);
+
+        // p95: pos = 0.95 * 9 = 8.55 → lower=sorted[8]=90, upper=sorted[9]=100 → 95.5 → (long) 95
+        assertThat(validator.getP95())
+                .as("p95 of [10..100] with 10 values must be 95 (interpolated between 90 and 100)")
+                .isEqualTo(95);
+    }
+
     // --- Helpers ---
 
     private void feedTickWithLatency(String symbol, long latencyMs, long seqNum) {

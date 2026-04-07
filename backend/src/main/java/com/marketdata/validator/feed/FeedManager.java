@@ -5,6 +5,7 @@ import com.marketdata.validator.model.Tick;
 import com.marketdata.validator.simulator.LVWRChaosSimulator;
 import com.marketdata.validator.simulator.ScenarioConfig;
 import com.marketdata.validator.store.ConnectionStore;
+import com.marketdata.validator.validator.ReconnectionValidator;
 import com.marketdata.validator.validator.ValidatorEngine;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
@@ -72,6 +73,7 @@ public class FeedManager {
                     FeedAdapter adapter = createAdapter(conn.getAdapterType());
                     FeedConnection feedConn = new FeedConnection(conn, adapter);
                     feedConn.addTickListener(this::broadcastTick);
+                    wireReconnectionCallbacks(feedConn, conn.getId());
                     connections.put(conn.getId(), feedConn);
                     log.info("Loaded saved connection: {} ({})", conn.getName(), conn.getId());
                     feedConn.connect();
@@ -100,6 +102,7 @@ public class FeedManager {
         FeedAdapter adapter = createAdapter(connection.getAdapterType());
         FeedConnection feedConn = new FeedConnection(connection, adapter);
         feedConn.addTickListener(this::broadcastTick);
+        wireReconnectionCallbacks(feedConn, connection.getId());
         connections.put(connection.getId(), feedConn);
         connectionStore.save(connection);
         log.info("Added connection: {} ({})", connection.getName(), connection.getId());
@@ -148,9 +151,19 @@ public class FeedManager {
         if (simConn != null) {
             ScenarioConfig runConfig = config != null ? config : new ScenarioConfig();
             validatorEngine.reset();
-            // Stop any previously running simulator for this connection
+            // Stop any previously running simulator and wait for it to fully exit
+            // before starting a new one to prevent two simulators emitting to the same feed.
             LVWRChaosSimulator existing = simulators.remove(connectionId);
-            if (existing != null) existing.stop();
+            if (existing != null) {
+                existing.stop();
+                try {
+                    if (!existing.waitForStop(10_000)) {
+                        log.warn("Old simulator for {} did not stop within 10s — proceeding anyway", connectionId);
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
             LVWRChaosSimulator sim = new LVWRChaosSimulator(connectionId, runConfig, this::broadcastTick);
             simulators.put(connectionId, sim);
             Thread.ofVirtual().name("lvwr-simulator-" + connectionId).start(sim);
@@ -309,6 +322,14 @@ public class FeedManager {
                 log.error("Global tick listener error: {}", e.getMessage());
             }
         }
+    }
+
+    private void wireReconnectionCallbacks(FeedConnection feedConn, String connectionId) {
+        ReconnectionValidator rv = validatorEngine.getReconnectionValidator();
+        if (rv == null) return;
+        feedConn.setDisconnectCallback(() -> rv.onDisconnect(connectionId));
+        feedConn.setReconnectCallback(duration -> rv.onReconnect(connectionId, duration));
+        feedConn.setReconnectFailedCallback(() -> rv.onReconnectFailed(connectionId));
     }
 
     FeedAdapter createAdapter(Connection.AdapterType type) {

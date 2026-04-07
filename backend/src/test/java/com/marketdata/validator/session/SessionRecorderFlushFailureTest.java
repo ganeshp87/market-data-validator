@@ -15,6 +15,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /**
@@ -122,8 +123,8 @@ class SessionRecorderFlushFailureTest {
     }
 
     @Test
-    void stopCompletesSessionEvenAfterPriorFlushFailure() {
-        // First flush fails, second (on stop) succeeds
+    void stopMarksSessionAsFailedAfterPriorFlushFailure() {
+        // First flush fails, second (on stop) succeeds — but flushFailed flag remains
         doThrow(new RuntimeException("DB write failed"))
                 .doNothing()
                 .when(mockTickStore).saveBatch(any());
@@ -140,12 +141,28 @@ class SessionRecorderFlushFailureTest {
             recorder.onTick(createTick(i));
         }
 
+        Session stopped = recorder.stop();
+
+        // Session must be FAILED — a prior flush lost ticks, data is incomplete
+        assertThat(stopped.getStatus()).isEqualTo(Session.Status.FAILED);
+        // tickCount includes the 100 lost + 5 saved = 105 (known divergence)
+        assertThat(stopped.getTickCount()).isEqualTo(105);
+        assertThat(recorder.isRecording()).isFalse();
+        verify(mockSessionStore).updateStatus(eq(1L), eq(Session.Status.FAILED));
+    }
+
+    @Test
+    void stopCompletesSessionWhenNoFlushFailure() {
+        recorder.start("Clean Session", "feed-1");
+
+        for (int i = 1; i <= 5; i++) {
+            recorder.onTick(createTick(i));
+        }
+
         Session completed = recorder.stop();
 
         assertThat(completed.getStatus()).isEqualTo(Session.Status.COMPLETED);
-        // tickCount includes the 100 lost + 5 saved = 105 (known divergence)
-        assertThat(completed.getTickCount()).isEqualTo(105);
-        assertThat(recorder.isRecording()).isFalse();
+        verify(mockSessionStore, never()).updateStatus(anyLong(), any());
     }
 
     @Test

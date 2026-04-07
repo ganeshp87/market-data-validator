@@ -127,6 +127,33 @@ class SessionReplayerTest {
     }
 
     @Test
+    void start_speedAboveMax_throws() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> replayer.start(1L, 1001.0));
+        assertTrue(ex.getMessage().contains("1000"),
+                "Error message must mention the maximum allowed speed");
+    }
+
+    @Test
+    void start_speedAtMax_isAllowed() throws InterruptedException {
+        List<Tick> ticks = zeroGapTicks(3);
+        setupSession(1L, ticks);
+
+        // speed=1000 is the maximum and must be accepted without throwing
+        replayer.start(1L, 1000.0);
+        waitForState(State.COMPLETED, 5000);
+        assertEquals(3, replayer.getTicksReplayed());
+    }
+
+    @Test
+    void setSpeed_aboveMaxThrows() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> replayer.setSpeed(1001.0));
+        assertTrue(ex.getMessage().contains("1000"),
+                "Error message must mention the maximum allowed speed");
+    }
+
+    @Test
     void start_alreadyReplaying_throws() throws InterruptedException {
         List<Tick> ticks = gappedTicks(100, 500); // long replay
         setupSession(1L, ticks);

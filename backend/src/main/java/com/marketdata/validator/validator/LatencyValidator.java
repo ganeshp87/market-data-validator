@@ -218,10 +218,15 @@ public class LatencyValidator implements Validator {
         }
         Arrays.sort(sorted);
 
-        int index = (int) Math.ceil(percentile / 100.0 * count) - 1;
-        if (index < 0) index = 0;
-        if (index >= count) index = count - 1;
-        return sorted[index];
+        // Standard linear interpolation: pos = percentile/100 * (count-1).
+        // Exact when pos is a whole number; interpolated between adjacent values otherwise.
+        // More accurate than ceil-based indexing for small sample buffers.
+        // Formula: result = lower + (pos - floor(pos)) * (upper - lower)
+        double pos = (percentile / 100.0) * (count - 1);
+        int lo = (int) Math.floor(pos);
+        int hi = (int) Math.ceil(pos);
+        if (hi >= count) hi = count - 1;
+        return (long) (sorted[lo] + (pos - lo) * (sorted[hi] - sorted[lo]));
     }
 
     // --- Visible for testing ---

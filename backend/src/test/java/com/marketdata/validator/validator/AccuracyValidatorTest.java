@@ -253,6 +253,38 @@ class AccuracyValidatorTest {
         assertThat(result.getDetails()).containsKey("accuracyRate");
     }
 
+    // --- Reconnect gap: no spike alert when feed was down for 60+ seconds ---
+
+    @Test
+    void priceMovementAfter60SecondGapDoesNotTriggerSpikeAlert() {
+        Instant base = Instant.parse("2026-01-01T00:00:00Z");
+
+        // Establish baseline price
+        validator.onTick(createTickWithTime("BTCUSDT", "45000.00", 1, base));
+
+        // Feed goes down for 61 seconds; price moves 11% — would normally be a spike
+        // but gap exceeds reconnectGapMs so this tick is treated as a new baseline
+        validator.onTick(createTickWithTime("BTCUSDT", "50000.00", 2, base.plusSeconds(61)));
+
+        assertThat(validator.getLargeMoveCount())
+                .as("price movement after 60s gap must not trigger a spike alert")
+                .isEqualTo(0);
+    }
+
+    @Test
+    void priceMovementWithinNormalGapStillTriggersSpikeAlert() {
+        Instant base = Instant.parse("2026-01-01T00:00:00Z");
+
+        validator.onTick(createTickWithTime("BTCUSDT", "45000.00", 1, base));
+
+        // Only 5 seconds gap — 12% move should still be flagged as a large move
+        validator.onTick(createTickWithTime("BTCUSDT", "50400.00", 2, base.plusSeconds(5)));
+
+        assertThat(validator.getLargeMoveCount())
+                .as("large move within normal gap window must still be flagged")
+                .isEqualTo(1);
+    }
+
     // --- Helpers ---
 
     private void feedTick(String symbol, String price, long seqNum) {
@@ -262,5 +294,13 @@ class AccuracyValidatorTest {
     private Tick createTick(String symbol, String price, long seqNum) {
         BigDecimal p = (price == null) ? null : new BigDecimal(price);
         return new Tick(symbol, p, new BigDecimal("1"), seqNum, Instant.now(), "test-feed");
+    }
+
+    private Tick createTickWithTime(String symbol, String price, long seqNum, Instant receivedAt) {
+        BigDecimal p = (price == null) ? null : new BigDecimal(price);
+        Tick tick = new Tick(symbol, p, new BigDecimal("1"), seqNum,
+                receivedAt.minusMillis(50), "test-feed");
+        tick.setReceivedTimestamp(receivedAt);
+        return tick;
     }
 }

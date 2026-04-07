@@ -236,14 +236,12 @@ public class FeedController {
                 return "URL must have a valid host";
             }
 
-            // Resolve hostname with a timeout to avoid hanging on slow DNS
+            // Resolve hostname — reject if DNS fails (unresolvable hostnames bypass IP checks)
             InetAddress address;
             try {
                 address = InetAddress.getByName(host);
             } catch (Exception e) {
-                // DNS resolution failed — skip IP check but allow the URL
-                // The actual WebSocket connection will fail later if unreachable
-                return null;
+                return "URL rejected: hostname could not be resolved. Only resolvable hostnames are permitted.";
             }
 
             if (address.isLoopbackAddress()) {

@@ -43,6 +43,7 @@ public class SessionRecorder {
     private final List<Tick> buffer = new ArrayList<>();
 
     private volatile boolean recording;
+    private volatile boolean flushFailed;
     private Session currentSession;
     private long tickCount;
     private long byteSize;
@@ -78,6 +79,7 @@ public class SessionRecorder {
             currentSession = sessionStore.create(session);
             tickCount = 0;
             byteSize = 0;
+            flushFailed = false;
             buffer.clear();
             lastFlushTime = System.currentTimeMillis();
             recording = true;
@@ -138,8 +140,14 @@ public class SessionRecorder {
             // Finalize session in DB
             sessionStore.complete(currentSession.getId(), tickCount, byteSize);
 
-            // Update local state
-            currentSession.setStatus(Session.Status.COMPLETED);
+            // If any flush failed during recording, override status to FAILED so the
+            // caller knows the session data is incomplete (ticks were silently discarded).
+            if (flushFailed) {
+                sessionStore.updateStatus(currentSession.getId(), Session.Status.FAILED);
+                currentSession.setStatus(Session.Status.FAILED);
+            } else {
+                currentSession.setStatus(Session.Status.COMPLETED);
+            }
             currentSession.setEndedAt(Instant.now());
             currentSession.setTickCount(tickCount);
             currentSession.setByteSize(byteSize);
@@ -229,6 +237,7 @@ public class SessionRecorder {
         } catch (Exception e) {
             log.error("Failed to flush {} ticks to DB — discarding to avoid retry storm: {}",
                     buffer.size(), e.getMessage());
+            flushFailed = true;
             buffer.clear();
         }
         lastFlushTime = System.currentTimeMillis();

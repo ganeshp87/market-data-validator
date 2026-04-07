@@ -5,9 +5,12 @@ import com.marketdata.validator.model.Tick;
 import com.marketdata.validator.model.ValidationResult;
 import com.marketdata.validator.session.SessionExporter;
 import com.marketdata.validator.session.SessionRecorder;
+import com.marketdata.validator.session.SessionReplayer;
 import com.marketdata.validator.store.SessionStore;
 import com.marketdata.validator.store.TickStore;
 import com.marketdata.validator.validator.ValidatorEngine;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -32,22 +35,27 @@ import java.util.Optional;
 @RequestMapping("/api/sessions")
 public class SessionController {
 
+    private static final Logger log = LoggerFactory.getLogger(SessionController.class);
+
     private final SessionRecorder recorder;
     private final SessionStore sessionStore;
     private final TickStore tickStore;
     private final ValidatorEngine engine;
     private final SessionExporter exporter;
+    private final SessionReplayer replayer;
 
     public SessionController(SessionRecorder recorder,
                              SessionStore sessionStore,
                              TickStore tickStore,
                              ValidatorEngine engine,
-                             SessionExporter exporter) {
+                             SessionExporter exporter,
+                             SessionReplayer replayer) {
         this.recorder = recorder;
         this.sessionStore = sessionStore;
         this.tickStore = tickStore;
         this.engine = engine;
         this.exporter = exporter;
+        this.replayer = replayer;
     }
 
     /**
@@ -170,20 +178,30 @@ public class SessionController {
 
     /**
      * Replay a recorded session through the validator engine.
-     * Feeds all ticks back into ValidatorEngine sequentially.
+     * Delegates to {@link SessionReplayer#replaySync} which owns speed validation.
+     *
+     * @param speed replay speed factor; must be in (0, 1000] — validated by SessionReplayer
      */
     @PostMapping("/{id}/replay")
-    public ResponseEntity<?> replaySession(@PathVariable long id) {
-        Optional<Session> sessionOpt = sessionStore.findById(id);
-        if (sessionOpt.isEmpty()) {
+    public ResponseEntity<?> replaySession(@PathVariable long id,
+                                           @RequestParam(defaultValue = "1.0") double speed) {
+        if (sessionStore.findById(id).isEmpty()) {
             return ResponseEntity.notFound().build();
         }
 
-        engine.reset();
-        List<Tick> ticks = tickStore.findBySessionId(id);
-
-        for (Tick tick : ticks) {
-            engine.onTick(tick);
+        List<Tick> ticks;
+        try {
+            ticks = replayer.replaySync(id, speed);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (SessionReplayer.ReplayException e) {
+            log.error("Replay of session {} failed at tick index {} (symbol={}): {}",
+                    id, e.getTicksProcessed(), e.getFailingSymbol(), e.getMessage(), e);
+            Map<String, Object> error = new LinkedHashMap<>();
+            error.put("error", e.getMessage());
+            error.put("ticksProcessedBeforeFailure", e.getTicksProcessed());
+            error.put("failingTickSymbol", e.getFailingSymbol());
+            return ResponseEntity.status(500).body(error);
         }
 
         List<ValidationResult> results = engine.getResults();

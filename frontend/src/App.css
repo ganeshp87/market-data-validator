@@ -1110,8 +1110,9 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 500px;
+  max-height: calc(100vh - 140px);
   overflow-y: auto;
+  padding-bottom: 12px;
 }
 
 .ap-card {

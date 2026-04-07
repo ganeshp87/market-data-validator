@@ -17,6 +17,8 @@ public class ScenarioConfig {
     private LocalDate tradeDate = LocalDate.now();
     private boolean includeHeartbeats = true;
     private int ticksPerSecond = 50;        // Throughput throttle
+    private long disconnectDurationMs = 8_000L;   // How long DISCONNECT failure pauses emission
+    private long reconnectPauseDurationMs = 500L; // Brief pause per RECONNECT_STORM event
 
     public ScenarioConfig() {}
 
@@ -40,4 +42,10 @@ public class ScenarioConfig {
 
     public int getTicksPerSecond() { return ticksPerSecond; }
     public void setTicksPerSecond(int ticksPerSecond) { this.ticksPerSecond = Math.max(1, Math.min(1000, ticksPerSecond)); }
+
+    public long getDisconnectDurationMs() { return disconnectDurationMs; }
+    public void setDisconnectDurationMs(long disconnectDurationMs) { this.disconnectDurationMs = Math.max(0, disconnectDurationMs); }
+
+    public long getReconnectPauseDurationMs() { return reconnectPauseDurationMs; }
+    public void setReconnectPauseDurationMs(long reconnectPauseDurationMs) { this.reconnectPauseDurationMs = Math.max(0, reconnectPauseDurationMs); }
 }

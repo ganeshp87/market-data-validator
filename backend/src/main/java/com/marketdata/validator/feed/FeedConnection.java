@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 /**
@@ -45,6 +46,12 @@ public class FeedConnection {
     private final AtomicInteger reconnectAttempts = new AtomicInteger(0);
     private final AtomicBoolean reconnecting = new AtomicBoolean(false);
     private volatile boolean intentionalDisconnect = false;
+
+    // Reconnection lifecycle callbacks — wired by FeedManager to drive ReconnectionValidator
+    private volatile Runnable disconnectCallback;
+    private volatile Consumer<Duration> reconnectCallback;
+    private volatile Runnable reconnectFailedCallback;
+    private volatile Instant disconnectTime;
 
     // Clock offset estimation: adjusts for skew between local clock and exchange
     private final long[] offsetSamples = new long[OFFSET_SAMPLE_SIZE];
@@ -102,6 +109,10 @@ public class FeedConnection {
         tickListeners.remove(listener);
     }
 
+    public void setDisconnectCallback(Runnable cb) { this.disconnectCallback = cb; }
+    public void setReconnectCallback(Consumer<Duration> cb) { this.reconnectCallback = cb; }
+    public void setReconnectFailedCallback(Runnable cb) { this.reconnectFailedCallback = cb; }
+
     public Connection getConnection() {
         return connection;
     }
@@ -130,6 +141,14 @@ public class FeedConnection {
             log.info("Connected to feed: {} {}",
                     StructuredArguments.keyValue("feed", connection.getName()),
                     StructuredArguments.keyValue("event", "connected"));
+
+            // Notify reconnect lifecycle if this was a recovery (disconnectTime set by handleDisconnect)
+            Instant dt = disconnectTime;
+            if (dt != null) {
+                disconnectTime = null;
+                Consumer<Duration> rcb = reconnectCallback;
+                if (rcb != null) rcb.accept(Duration.between(dt, Instant.now()));
+            }
 
             // Send subscribe message
             String subscribeMsg = adapter.getSubscribeMessage(connection.getSymbols());
@@ -241,6 +260,15 @@ public class FeedConnection {
             return;
         }
 
+        // Record when the disconnect happened and notify the reconnection validator
+        disconnectTime = Instant.now();
+        Runnable dcb = disconnectCallback;
+        if (dcb != null) dcb.run();
+
+        // Different exchange servers may have different clock offsets — recalibrate after reconnect
+        // so latency metrics are not silently skewed by a stale offset from the previous server.
+        resetClockOffset();
+
         int attempt = reconnectAttempts.incrementAndGet();
         if (attempt > MAX_RECONNECT_ATTEMPTS) {
             connection.setStatus(Connection.Status.ERROR);
@@ -248,6 +276,8 @@ public class FeedConnection {
                     StructuredArguments.keyValue("feed", connection.getName()),
                     MAX_RECONNECT_ATTEMPTS,
                     StructuredArguments.keyValue("event", "reconnect_exhausted"));
+            Runnable rfcb = reconnectFailedCallback;
+            if (rfcb != null) rfcb.run();
             return;
         }
 

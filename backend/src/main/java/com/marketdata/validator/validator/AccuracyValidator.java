@@ -11,6 +11,8 @@ import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.math.MathContext;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -37,7 +39,11 @@ public class AccuracyValidator implements Validator {
     private static final BigDecimal DEFAULT_LARGE_MOVE_PERCENT = new BigDecimal("0.10"); // 10%
 
     private final Map<String, BigDecimal> lastPriceBySymbol = new ConcurrentHashMap<>();
+    private final Map<String, Instant> lastTickTimeBySymbol = new ConcurrentHashMap<>();
     private final Map<String, Long> lastSequenceBySymbol = new ConcurrentHashMap<>();
+    // If the gap since the last tick for a symbol exceeds this threshold, the feed was
+    // likely down and the new tick is treated as a fresh baseline (no spike comparison).
+    private volatile long reconnectGapMs = 60_000L;
     private final AtomicLong totalTicks = new AtomicLong(0);
     private final AtomicLong validTicks = new AtomicLong(0);
     private final AtomicLong invalidPriceCount = new AtomicLong(0);
@@ -82,6 +88,17 @@ public class AccuracyValidator implements Validator {
         // Rule 3: Large move detection (> 10% change from previous tick for same symbol)
         if (tick.getPrice() != null && tick.getPrice().compareTo(BigDecimal.ZERO) > 0) {
             BigDecimal prevPrice = lastPriceBySymbol.get(tick.getSymbol());
+
+            // If the feed was down for longer than reconnectGapMs, treat this tick as a
+            // new baseline rather than comparing against a stale pre-disconnect price.
+            Instant lastTime = lastTickTimeBySymbol.get(tick.getSymbol());
+            if (prevPrice != null && lastTime != null && tick.getReceivedTimestamp() != null) {
+                long gapMs = Duration.between(lastTime, tick.getReceivedTimestamp()).toMillis();
+                if (gapMs >= reconnectGapMs) {
+                    prevPrice = null; // skip spike detection — treat as new baseline
+                }
+            }
+
             if (prevPrice != null && prevPrice.compareTo(BigDecimal.ZERO) > 0) {
                 BigDecimal change = tick.getPrice().subtract(prevPrice).abs();
                 BigDecimal percentChange = change.divide(prevPrice, MathContext.DECIMAL64);
@@ -93,6 +110,10 @@ public class AccuracyValidator implements Validator {
                 }
             }
             lastPriceBySymbol.put(tick.getSymbol(), tick.getPrice());
+        }
+
+        if (tick.getReceivedTimestamp() != null) {
+            lastTickTimeBySymbol.put(tick.getSymbol(), tick.getReceivedTimestamp());
         }
 
         if (isValid) {
@@ -141,6 +162,7 @@ public class AccuracyValidator implements Validator {
     @Override
     public void reset() {
         lastPriceBySymbol.clear();
+        lastTickTimeBySymbol.clear();
         lastSequenceBySymbol.clear();
         totalTicks.set(0);
         validTicks.set(0);
@@ -159,6 +181,9 @@ public class AccuracyValidator implements Validator {
         }
         if (config.containsKey("largeMovePercent")) {
             largeMovePercent = new BigDecimal(config.get("largeMovePercent").toString());
+        }
+        if (config.containsKey("reconnectGapMs")) {
+            reconnectGapMs = ((Number) config.get("reconnectGapMs")).longValue();
         }
     }
 

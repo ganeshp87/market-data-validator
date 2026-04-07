@@ -44,6 +44,11 @@ public class AlertGenerator {
         this.alertStore = alertStore;
     }
 
+    /** Package-private for testing — returns the raw lastCheckTime value. */
+    long getLastCheckTime() {
+        return lastCheckTime.get();
+    }
+
     @PostConstruct
     void init() {
         // Clear any stale alerts from previous server runs so fresh alerts are generated
@@ -54,20 +59,24 @@ public class AlertGenerator {
             log.warn("Failed to clear stale alerts: {}", e.getMessage());
         }
         engine.addListener(this::onValidationResults);
-        log.info("AlertGenerator registered as ValidatorEngine listener");
+        engine.addPerFeedListener((feedId, results) -> onValidationResults(results));
+        log.info("AlertGenerator registered as ValidatorEngine listener (global + per-feed)");
     }
 
-    private void onValidationResults(List<ValidationResult> results) {
+    void onValidationResults(List<ValidationResult> results) {
         long now = System.currentTimeMillis();
         long lastCheck = lastCheckTime.get();
 
-        // Refresh the set of areas that already have unacknowledged alerts
+        // Refresh the set of areas that already have unacknowledged alerts.
+        // The timer is advanced only after a successful query — if the query throws,
+        // lastCheckTime is reset to lastCheck so the next call retries immediately.
         if (now - lastCheck >= CHECK_INTERVAL_MS && lastCheckTime.compareAndSet(lastCheck, now)) {
             try {
                 coveredAreas = alertStore.findUnacknowledged().stream()
                         .map(Alert::getArea)
                         .collect(Collectors.toSet());
             } catch (Exception e) {
+                lastCheckTime.set(lastCheck); // reset timer — retry on next call
                 log.warn("Failed to refresh covered alert areas: {}", e.getMessage());
             }
         }
@@ -87,7 +96,7 @@ public class AlertGenerator {
             Severity severity = result.getStatus() == ValidationResult.Status.FAIL
                     ? Severity.CRITICAL : Severity.WARN;
 
-            String message = String.format("%s validation %s — value: %s, threshold: %s",
+            String message = String.format("%s validation %s — value: %.2f, threshold: %.2f",
                     areaName, result.getStatus(), result.getMetric(), result.getThreshold());
 
             Alert alert = new Alert(areaName, severity, message);

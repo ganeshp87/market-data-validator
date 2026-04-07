@@ -36,15 +36,20 @@ public class CompletenessValidator implements Validator {
     private static final long DEFAULT_HEARTBEAT_THRESHOLD_MS = 10_000; // 10 seconds
     private static final double DEFAULT_PASS_THRESHOLD = 99.99;
     private static final double DEFAULT_WARN_THRESHOLD = 99.0;
+    // Hysteresis: a symbol must receive consistent ticks for this long before being
+    // removed from staleSymbols. Prevents FAIL→PASS→FAIL oscillation on unstable feeds.
+    private static final long DEFAULT_STALE_RECOVERY_WINDOW_MS = 30_000L; // 30 seconds
 
     private final Map<String, Long> lastSeqBySymbol = new ConcurrentHashMap<>();
     private final Map<String, Instant> lastTickTimeBySymbol = new ConcurrentHashMap<>();
     private final Set<String> staleSymbols = ConcurrentHashMap.newKeySet();
+    private final Map<String, Instant> staleRecoveryStartBySymbol = new ConcurrentHashMap<>();
     private final AtomicLong totalTicks = new AtomicLong(0);
     private final AtomicLong gapEventCount = new AtomicLong(0);
     private final AtomicLong missingSequenceCount = new AtomicLong(0);
 
     private long heartbeatThresholdMs = DEFAULT_HEARTBEAT_THRESHOLD_MS;
+    private long staleRecoveryWindowMs = DEFAULT_STALE_RECOVERY_WINDOW_MS;
 
     @Override
     public String getArea() {
@@ -76,11 +81,20 @@ public class CompletenessValidator implements Validator {
             long gapMs = Duration.between(lastTime, tick.getReceivedTimestamp()).toMillis();
             if (gapMs > heartbeatThresholdMs) {
                 staleSymbols.add(tick.getSymbol());
+                staleRecoveryStartBySymbol.remove(tick.getSymbol()); // reset recovery timer
                 log.debug("Stale symbol detected: {} gap={}ms threshold={}ms",
                         tick.getSymbol(), gapMs, heartbeatThresholdMs);
-            } else {
-                // Symbol recovered — remove from stale set
-                staleSymbols.remove(tick.getSymbol());
+            } else if (staleSymbols.contains(tick.getSymbol())) {
+                // Hysteresis: only remove from staleSymbols after staleRecoveryWindowMs of
+                // consistent ticks — prevents oscillation on unstable feeds.
+                Instant recoveryStart = staleRecoveryStartBySymbol.computeIfAbsent(
+                        tick.getSymbol(), k -> tick.getReceivedTimestamp());
+                long recoveredMs = Duration.between(recoveryStart, tick.getReceivedTimestamp()).toMillis();
+                if (recoveredMs >= staleRecoveryWindowMs) {
+                    staleSymbols.remove(tick.getSymbol());
+                    staleRecoveryStartBySymbol.remove(tick.getSymbol());
+                    log.debug("Stale symbol recovered after {}ms: {}", recoveredMs, tick.getSymbol());
+                }
             }
         }
 
@@ -138,6 +152,7 @@ public class CompletenessValidator implements Validator {
         lastSeqBySymbol.clear();
         lastTickTimeBySymbol.clear();
         staleSymbols.clear();
+        staleRecoveryStartBySymbol.clear();
         totalTicks.set(0);
         gapEventCount.set(0);
         missingSequenceCount.set(0);
@@ -147,6 +162,9 @@ public class CompletenessValidator implements Validator {
     public void configure(Map<String, Object> config) {
         if (config.containsKey("heartbeatThresholdMs")) {
             heartbeatThresholdMs = ((Number) config.get("heartbeatThresholdMs")).longValue();
+        }
+        if (config.containsKey("staleRecoveryWindowMs")) {
+            staleRecoveryWindowMs = ((Number) config.get("staleRecoveryWindowMs")).longValue();
         }
     }
 

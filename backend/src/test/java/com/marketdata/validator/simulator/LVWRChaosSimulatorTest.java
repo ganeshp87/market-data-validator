@@ -381,4 +381,105 @@ class LVWRChaosSimulatorTest {
                 assertThat(count).as("counter for %s must be 0 after changing SCENARIO target", type).isEqualTo(0L)
         );
     }
+
+    @Test
+    void waitForStopReturnsTrueAfterSimulatorExits() throws Exception {
+        config.setMode(SimulatorMode.CLEAN);
+        config.setNumTrades(0); // unlimited
+        config.setTicksPerSecond(100);
+
+        LVWRChaosSimulator sim = new LVWRChaosSimulator("feed-wfs", config, tick -> {});
+        Thread t = Thread.ofVirtual().start(sim);
+        Thread.sleep(50); // let it start
+
+        assertThat(sim.isRunning()).isTrue();
+
+        sim.stop();
+        boolean stopped = sim.waitForStop(2_000);
+
+        assertThat(stopped).as("waitForStop must return true when simulator has exited").isTrue();
+        assertThat(sim.isRunning()).isFalse();
+        t.join(1_000);
+    }
+
+    @Test
+    void restartDoesNotLeaveOldSimulatorRunning() throws Exception {
+        config.setMode(SimulatorMode.CLEAN);
+        config.setNumTrades(0); // unlimited
+        config.setTicksPerSecond(100);
+
+        // Start first simulator
+        LVWRChaosSimulator first = new LVWRChaosSimulator("feed-restart", config, tick -> {});
+        Thread t1 = Thread.ofVirtual().start(first);
+        Thread.sleep(50);
+        assertThat(first.isRunning()).isTrue();
+
+        // Simulate the FeedManager restart sequence: stop + waitForStop
+        first.stop();
+        boolean stopped = first.waitForStop(2_000);
+        assertThat(stopped).as("old simulator must stop before new one starts").isTrue();
+
+        // Start second simulator — old one is confirmed stopped
+        LVWRChaosSimulator second = new LVWRChaosSimulator("feed-restart", config, tick -> {});
+        Thread t2 = Thread.ofVirtual().start(second);
+        Thread.sleep(50);
+
+        // Only second is running; first is stopped
+        assertThat(first.isRunning()).isFalse();
+        assertThat(second.isRunning()).isTrue();
+
+        second.stop();
+        second.waitForStop(2_000);
+        t1.join(1_000);
+        t2.join(1_000);
+    }
+
+    @Test
+    void stopInterruptsDisconnectSleep() throws Exception {
+        // DISCONNECT failure sleeps for 8s — stop() must interrupt it quickly
+        config.setMode(SimulatorMode.SCENARIO);
+        config.setTargetScenario(FailureType.DISCONNECT);
+        config.setFailureRate(1.0);
+        config.setNumTrades(0);
+        config.setTicksPerSecond(100);
+
+        LVWRChaosSimulator sim = new LVWRChaosSimulator("feed-int", config, tick -> {});
+        Thread t = Thread.ofVirtual().start(sim);
+        Thread.sleep(150); // let it enter the DISCONNECT sleep
+
+        long start = System.currentTimeMillis();
+        sim.stop();
+        boolean stopped = sim.waitForStop(2_000); // must return well before 8s
+
+        assertThat(stopped).isTrue();
+        assertThat(System.currentTimeMillis() - start)
+                .as("stop+waitForStop must complete in under 2s, not wait out the 8s sleep")
+                .isLessThan(2_000);
+        t.join(1_000);
+    }
+
+    @Test
+    void disconnectDurationIsReadFromConfig() throws Exception {
+        // Configure a short disconnect duration so the test completes quickly
+        config.setMode(SimulatorMode.SCENARIO);
+        config.setTargetScenario(FailureType.DISCONNECT);
+        config.setFailureRate(1.0);
+        config.setNumTrades(1);          // stop after one DISCONNECT event
+        config.setTicksPerSecond(100);
+        config.setDisconnectDurationMs(100); // 100ms instead of 8000ms
+
+        LVWRChaosSimulator sim = new LVWRChaosSimulator("feed-dur", config, tick -> {});
+        long start = System.currentTimeMillis();
+        Thread t = Thread.ofVirtual().start(sim);
+        boolean stopped = sim.waitForStop(3_000);
+        long elapsed = System.currentTimeMillis() - start;
+
+        assertThat(stopped)
+                .as("simulator must complete within 3s when disconnectDurationMs=100")
+                .isTrue();
+        assertThat(elapsed)
+                .as("simulator must not have slept the default 8s disconnect duration")
+                .isLessThan(3_000);
+        t.join(1_000);
+    }
 }

@@ -92,11 +92,14 @@ public class TickStore {
     }
 
     /**
-     * Get all ticks for a recorded session, ordered by exchange timestamp.
+     * Get all ticks for a recorded session, ordered by exchange timestamp ascending.
+     * ORDER BY exchange_ts ASC is intentional and required for correct replay:
+     * SessionReplayer assumes ticks arrive in chronological order to preserve
+     * inter-tick timing and produce accurate validator state.
      */
     public List<Tick> findBySessionId(long sessionId) {
         return jdbc.query(
-                "SELECT * FROM ticks WHERE session_id = ? ORDER BY exchange_ts",
+                "SELECT * FROM ticks WHERE session_id = ? ORDER BY exchange_ts ASC",
                 ROW_MAPPER, sessionId);
     }
 
