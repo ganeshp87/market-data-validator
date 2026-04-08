@@ -6,7 +6,7 @@ import com.marketdata.validator.model.ValidationResult;
 import java.util.Map;
 
 /**
- * Interface for all 8 validators in the system.
+ * Interface for all 9 validators in the system.
  * Each validator receives every tick, maintains its own state,
  * and produces a ValidationResult on demand.
  *

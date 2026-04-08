@@ -25,7 +25,7 @@ import java.util.stream.Collectors;
  * Orchestrator that holds all validators and fans out each tick to all of them.
  *
  * Blueprint Section 5.3:
- *   - Holds all 8 validators (injected, not hardcoded)
+ *   - Holds all 9 validators (injected, not hardcoded)
  *   - Fans out each tick to all validators
  *   - Provides aggregated ValidationSummary (all results)
  *   - Publishes updates when results change
@@ -41,6 +41,7 @@ public class ValidatorEngine {
     private static final long NOTIFY_INTERVAL_MS = 250;
 
     private final List<Validator> validators;
+    private final FieldCompletenessValidator fieldGate;
     private final List<Consumer<List<ValidationResult>>> listeners = new CopyOnWriteArrayList<>();
     private final List<BiConsumer<String, List<ValidationResult>>> perFeedListeners = new CopyOnWriteArrayList<>();
     private final AtomicLong tickCount = new AtomicLong(0);
@@ -51,8 +52,17 @@ public class ValidatorEngine {
     private final ConcurrentHashMap<String, List<Validator>> feedValidators = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, AtomicLong> feedTickCounts = new ConcurrentHashMap<>();
 
-    public ValidatorEngine(List<Validator> validators) {
+    @org.springframework.beans.factory.annotation.Autowired
+    public ValidatorEngine(List<Validator> validators, FieldCompletenessValidator fieldGate) {
         this.validators = List.copyOf(validators); // Defensive copy — immutable after construction
+        this.fieldGate = fieldGate;
+    }
+
+    /**
+     * Convenience constructor for tests — no field-completeness gate.
+     */
+    public ValidatorEngine(List<Validator> validators) {
+        this(validators, null);
     }
 
     /**
@@ -100,6 +110,11 @@ public class ValidatorEngine {
      * Fans out to both the global validator set and the per-feed validator set (Fix 8).
      */
     public void onTick(Tick tick) {
+        // Pre-validation gate: reject ticks with missing required fields
+        if (fieldGate != null && !fieldGate.isValid(tick)) {
+            return;
+        }
+
         tickCount.incrementAndGet();
 
         // Assign traceId for end-to-end tracing through the validation pipeline
@@ -208,6 +223,7 @@ public class ValidatorEngine {
         lastNotifyTimeMs = 0;
         feedValidators.clear();
         feedTickCounts.clear();
+        if (fieldGate != null) fieldGate.reset();
         log.info("All validators reset (global + per-feed)");
     }
 
@@ -258,10 +274,28 @@ public class ValidatorEngine {
     }
 
     /**
-     * Get total number of ticks processed.
+     * Get total number of ticks processed (passed field-completeness gate).
      */
     public long getTickCount() {
         return tickCount.get();
+    }
+
+    /**
+     * Get count of ticks rejected by the pre-validation field-completeness gate.
+     */
+    public long getRejectedCount() {
+        return fieldGate != null ? fieldGate.getRejectedCount() : 0;
+    }
+
+    /**
+     * Get count of duplicate ticks detected by the ordering validator.
+     */
+    public long getDuplicateCount() {
+        return validators.stream()
+                .filter(v -> v instanceof OrderingValidator)
+                .map(v -> ((OrderingValidator) v).getDuplicateCount())
+                .findFirst()
+                .orElse(0L);
     }
 
     /**
@@ -348,7 +382,7 @@ public class ValidatorEngine {
 
     /**
      * Create a fresh validator set for per-feed scoping (Fix 8).
-     * Instantiates the same 8 validator types as the global set.
+     * Instantiates the same 9 validator types as the global set.
      */
     private List<Validator> createValidatorSet() {
         return List.of(
@@ -359,7 +393,8 @@ public class ValidatorEngine {
                 new ThroughputValidator(),
                 new ReconnectionValidator(),
                 new SubscriptionValidator(),
-                new StatefulValidator()
+                new StatefulValidator(),
+                new SourceValidator()
         );
     }
 }

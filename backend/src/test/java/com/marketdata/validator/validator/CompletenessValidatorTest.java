@@ -271,17 +271,26 @@ class CompletenessValidatorTest {
 
     @Test
     void recoveryFromStaleAfterNewTick() {
-        // Configure short heartbeat threshold for testing
-        validator.configure(Map.of("heartbeatThresholdMs", 100L));
+        // heartbeat=100ms, recovery=200ms: short windows for fast deterministic test
+        validator.configure(Map.of("heartbeatThresholdMs", 100L, "staleRecoveryWindowMs", 200L));
 
         feedTick("BTCUSDT", 1, BASE);
-        // Next tick arrives well after threshold
+        // Gap of 500ms > 100ms heartbeat → symbol goes stale
         feedTick("BTCUSDT", 2, BASE.plusMillis(500));
 
-        // Symbol was stale but should recover after receiving tick 2
-        ValidationResult result = validator.getResult();
-        // The symbol should no longer be stale since it just got a tick
-        assertThat(result).isNotNull();
+        assertThat(validator.getStaleSymbols())
+                .as("symbol must be stale after gap exceeds heartbeat threshold")
+                .contains("BTCUSDT");
+
+        // Feed recovery ticks within heartbeat threshold spanning > 200ms recovery window
+        feedTick("BTCUSDT", 3, BASE.plusMillis(550));  // recoveryStart
+        feedTick("BTCUSDT", 4, BASE.plusMillis(600));   // 50ms into recovery
+        feedTick("BTCUSDT", 5, BASE.plusMillis(700));   // 150ms into recovery
+        feedTick("BTCUSDT", 6, BASE.plusMillis(800));   // 250ms ≥ 200ms → cleared
+
+        assertThat(validator.getStaleSymbols())
+                .as("symbol must recover after ticks span recovery window")
+                .doesNotContain("BTCUSDT");
     }
 
     @Test

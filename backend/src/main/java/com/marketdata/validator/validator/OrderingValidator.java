@@ -35,6 +35,7 @@ public class OrderingValidator implements Validator {
     private final Map<String, Long> lastSequenceBySymbol = new ConcurrentHashMap<>();
     private final AtomicLong totalTicks = new AtomicLong(0);
     private final AtomicLong outOfOrderCount = new AtomicLong(0);
+    private final AtomicLong duplicateCount = new AtomicLong(0);
     private final AtomicLong bidAskViolations = new AtomicLong(0);
     private final AtomicLong volumeViolations = new AtomicLong(0);
 
@@ -51,6 +52,11 @@ public class OrderingValidator implements Validator {
         // Idempotent: skip already-processed sequence numbers
         Long lastSeq = lastSequenceBySymbol.get(tick.getSymbol());
         if (lastSeq != null && tick.getSequenceNum() <= lastSeq) {
+            if (tick.getSequenceNum() == lastSeq) {
+                duplicateCount.incrementAndGet();
+            } else {
+                outOfOrderCount.incrementAndGet();
+            }
             return;
         }
 
@@ -111,6 +117,7 @@ public class OrderingValidator implements Validator {
                 message, orderingRate, passThreshold);
         result.getDetails().put("totalTicks", total);
         result.getDetails().put("outOfOrderCount", outOfOrderCount.get());
+        result.getDetails().put("duplicateCount", duplicateCount.get());
         result.getDetails().put("bidAskViolations", bidAskViolations.get());
         result.getDetails().put("volumeViolations", volumeViolations.get());
         result.getDetails().put("orderingRate", orderingRate);
@@ -124,6 +131,7 @@ public class OrderingValidator implements Validator {
         lastSequenceBySymbol.clear();
         totalTicks.set(0);
         outOfOrderCount.set(0);
+        duplicateCount.set(0);
         bidAskViolations.set(0);
         volumeViolations.set(0);
     }
@@ -146,6 +154,10 @@ public class OrderingValidator implements Validator {
 
     long getOutOfOrderCount() {
         return outOfOrderCount.get();
+    }
+
+    long getDuplicateCount() {
+        return duplicateCount.get();
     }
 
     long getBidAskViolations() {

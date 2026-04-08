@@ -91,7 +91,6 @@ public class ComplianceController {
     /** RTS 22: trade ID uniqueness PASS when no duplicate ordering violations */
     private String deriveRts22(ValidationResult ordering) {
         if (ordering == null) return "UNKNOWN";
-        if (ordering.getStatus() == ValidationResult.Status.PASS) return "PASS";
         Object dups = ordering.getDetails() != null ? ordering.getDetails().get("duplicateCount") : null;
         if (dups instanceof Number dupNum) {
             return dupNum.longValue() == 0 ? "PASS" : "FAIL";

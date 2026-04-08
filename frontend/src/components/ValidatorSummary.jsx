@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import useSSE from '../hooks/useSSE';
 
-const AREAS = ['ACCURACY', 'ORDERING', 'LATENCY', 'COMPLETENESS', 'THROUGHPUT', 'STATEFUL', 'RECONNECTION', 'SUBSCRIPTION'];
+const AREAS = ['ACCURACY', 'ORDERING', 'LATENCY', 'COMPLETENESS', 'THROUGHPUT', 'STATEFUL', 'RECONNECTION', 'SUBSCRIPTION', 'SOURCE'];
 const AREA_NAMES = {
   ACCURACY: 'Accuracy', ORDERING: 'Ordering', LATENCY: 'Latency',
   COMPLETENESS: 'Completeness', THROUGHPUT: 'Throughput', STATEFUL: 'Stateful',
   RECONNECTION: 'Reconnection', SUBSCRIPTION: 'Subscription',
+  SOURCE: 'Source',
 };
 
 export default function ValidatorSummary() {
@@ -38,7 +39,7 @@ export default function ValidatorSummary() {
   return (
     <div className="panel-section">
       <div className="panel-label" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-        <span>8 Validators — live state</span>
+        <span>9 Validators — live state</span>
         <select
           className="sim-scenario-select"
           style={{ maxWidth: '220px', fontSize: '0.85em' }}

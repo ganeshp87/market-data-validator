@@ -126,6 +126,18 @@ class ComplianceControllerTest {
     @Test
     void rts22PassWhenOrderingStatusIsPass() {
         ValidationResult ordering = ValidationResult.pass(Area.ORDERING, "all in order", 100.0, 99.99);
+        ordering.getDetails().put("duplicateCount", 0L);
+        when(engine.getResultsByArea()).thenReturn(Map.of("ORDERING", ordering));
+
+        ResponseEntity<Map<String, Object>> response = controller.getCompliance();
+        assertThat(response.getBody().get("rts22TradeIdUniqueness")).isEqualTo("PASS");
+    }
+
+    @Test
+    void rts22PassWhenDuplicateCountIsZero() {
+        // Status is WARN (e.g., out-of-order ticks) but no duplicates → RTS22 still PASS
+        ValidationResult ordering = ValidationResult.warn(Area.ORDERING, "out-of-order ticks", 98.5, 99.99);
+        ordering.getDetails().put("duplicateCount", 0L);
         when(engine.getResultsByArea()).thenReturn(Map.of("ORDERING", ordering));
 
         ResponseEntity<Map<String, Object>> response = controller.getCompliance();

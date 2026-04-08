@@ -59,7 +59,9 @@ public class ValidationController {
                 "results", resultsByArea,
                 "overallStatus", overallStatus,
                 "timestamp", Instant.now(),
-                "ticksProcessed", ticks
+                "ticksProcessed", ticks,
+                "rejectedCount", engine.getRejectedCount(),
+                "duplicateCount", engine.getDuplicateCount()
         );
     }
 

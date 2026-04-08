@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.math.MathContext;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
@@ -77,6 +78,9 @@ public class StatefulValidator implements Validator {
     private long staleThresholdMs = DEFAULT_STALE_THRESHOLD_MS;
     private int maxViolations = DEFAULT_MAX_VIOLATIONS;
 
+    // Clock for time-dependent operations (injectable for testing)
+    private Clock clock = Clock.systemUTC();
+
     @Override
     public String getArea() {
         return Area.STATEFUL.name();
@@ -104,7 +108,7 @@ public class StatefulValidator implements Validator {
             consistentChecks.incrementAndGet();
         } else {
             for (String rule : ruleViolations) {
-                addViolation(new StateViolation(symbol, Instant.now(), rule));
+                addViolation(new StateViolation(symbol, clock.instant(), rule));
             }
         }
 
@@ -130,7 +134,7 @@ public class StatefulValidator implements Validator {
         }
 
         state.lastPrice = price;
-        state.lastTickTime = Instant.now();
+        state.lastTickTime = clock.instant();
         state.tickCount++;
 
         // Update high/low
@@ -263,7 +267,7 @@ public class StatefulValidator implements Validator {
     /** Returns set of symbols that haven't received a tick within the stale threshold. */
     private Set<String> getStaleSymbols() {
         Set<String> stale = new HashSet<>();
-        Instant now = Instant.now();
+        Instant now = clock.instant();
         for (Map.Entry<String, SymbolState> entry : stateBySymbol.entrySet()) {
             SymbolState s = entry.getValue();
             if (s.lastTickTime != null
@@ -306,6 +310,7 @@ public class StatefulValidator implements Validator {
     long getConsistentChecks() { return consistentChecks.get(); }
     List<StateViolation> getViolations() { return List.copyOf(violations); }
     int getTrackedSymbolCount() { return stateBySymbol.size(); }
+    void setClock(Clock clock) { this.clock = clock; }
 
     // --- Inner classes ---
 

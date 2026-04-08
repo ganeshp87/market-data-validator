@@ -2,11 +2,11 @@ import React, { useState, useEffect } from 'react';
 import useSSE from '../hooks/useSSE';
 
 /**
- * ValidationDashboard — 8-area pass/warn/fail cards with live SSE updates.
+ * ValidationDashboard — 9-area pass/warn/fail cards with live SSE updates.
  *
  * Blueprint Section 6.2:
- *   - 8 cards (ACCURACY, LATENCY, COMPLETENESS, RECONNECTION,
- *     THROUGHPUT, ORDERING, SUBSCRIPTION, STATEFUL)
+ *   - 9 cards (ACCURACY, LATENCY, COMPLETENESS, RECONNECTION,
+ *     THROUGHPUT, ORDERING, SUBSCRIPTION, STATEFUL, SOURCE)
  *   - Each card: status icon, area name, metric, threshold, message
  *   - Click card → expands to show detailed results
  *   - Overall status banner at top
@@ -17,7 +17,7 @@ import useSSE from '../hooks/useSSE';
 
 const ALL_AREAS = [
   'ACCURACY', 'LATENCY', 'COMPLETENESS', 'RECONNECTION',
-  'THROUGHPUT', 'ORDERING', 'SUBSCRIPTION', 'STATEFUL',
+  'THROUGHPUT', 'ORDERING', 'SUBSCRIPTION', 'STATEFUL', 'SOURCE',
 ];
 
 const STATUS_ICONS = {
@@ -61,6 +61,8 @@ export default function ValidationDashboard() {
   const results = latest?.results || {};
   const overallStatus = latest?.overallStatus || 'PASS';
   const ticksProcessed = latest?.ticksProcessed || 0;
+  const rejectedCount = latest?.rejectedCount || 0;
+  const duplicateCount = latest?.duplicateCount || 0;
 
   const scopeLabel = selectedFeed
     ? `Feed: ${feeds.find(f => f.id === selectedFeed)?.name || selectedFeed}`
@@ -87,6 +89,12 @@ export default function ValidationDashboard() {
             {STATUS_ICONS[overallStatus] || '⚪'} Overall: {overallStatus}
           </span>
           <span className="vd-ticks">{ticksProcessed.toLocaleString()} ticks processed</span>
+          {rejectedCount > 0 && (
+            <span className="vd-rejected">{rejectedCount.toLocaleString()} rejected</span>
+          )}
+          {duplicateCount > 0 && (
+            <span className="vd-duplicates">{duplicateCount.toLocaleString()} duplicates</span>
+          )}
           <span className={`status-dot ${connected ? 'green' : 'red'}`} />
         </div>
       </div>
@@ -172,6 +180,7 @@ function formatAreaName(area) {
     ORDERING: 'Ordering',
     SUBSCRIPTION: 'Subscription',
     STATEFUL: 'Stateful',
+    SOURCE: 'Source',
   };
   return names[area] || area;
 }
@@ -192,6 +201,8 @@ function formatMetric(area, value) {
     case 'RECONNECTION':
     case 'SUBSCRIPTION':
       return String(value);
+    case 'SOURCE':
+      return `${Number(value).toFixed(2)}%`;
     default:
       return String(value);
   }

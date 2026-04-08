@@ -6,13 +6,13 @@ import java.util.Map;
 
 /**
  * The result of one validator's assessment — e.g., "ACCURACY: PASS at 99.98%".
- * Each of the 8 validators produces one ValidationResult.
- * The ValidatorEngine aggregates all 8 into a ValidationSummary.
+ * Each of the 9 validators produces one ValidationResult.
+ * The ValidatorEngine aggregates all 9 into a ValidationSummary.
  */
 public class ValidationResult {
 
     /**
-     * The 8 testing areas from the blueprint.
+     * The 9 testing areas from the blueprint.
      * Each validator maps to exactly one area.
      */
     public enum Area {
@@ -23,7 +23,8 @@ public class ValidationResult {
         THROUGHPUT,
         ORDERING,
         SUBSCRIPTION,
-        STATEFUL
+        STATEFUL,
+        SOURCE
     }
 
     /**

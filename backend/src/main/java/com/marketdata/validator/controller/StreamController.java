@@ -30,7 +30,7 @@ import java.util.function.Consumer;
  *
  * Blueprint Section 8 — Live Streaming Endpoints:
  *   GET /api/stream/ticks          — live tick stream (optional ?symbol= filter)
- *   GET /api/stream/validation     — live validation results (all 8 areas)
+ *   GET /api/stream/validation     — live validation results (all 9 areas)
  *   GET /api/stream/latency        — latency stats every 1 second
  *   GET /api/stream/throughput     — messages/sec every 1 second
  *
@@ -121,7 +121,7 @@ public class StreamController {
     private final ConcurrentHashMap<SseEmitter, String> validationFeedFilters = new ConcurrentHashMap<>();
 
     /**
-     * GET /api/stream/validation — live validation results (all 8 areas).
+     * GET /api/stream/validation — live validation results (all 9 areas).
      * Optional ?feedId= scopes results to a single feed (Fix 8).
      */
     @GetMapping("/validation")
@@ -216,7 +216,9 @@ public class StreamController {
                 "timestamp", Instant.now(),
                 "results", engine.getResultsByArea(),
                 "overallStatus", computeOverallStatus(results),
-                "ticksProcessed", engine.getTickCount()
+                "ticksProcessed", engine.getTickCount(),
+                "rejectedCount", engine.getRejectedCount(),
+                "duplicateCount", engine.getDuplicateCount()
         );
 
         for (SseEmitter emitter : validationEmitters) {
@@ -232,7 +234,9 @@ public class StreamController {
                             "timestamp", Instant.now(),
                             "results", feedResults,
                             "overallStatus", computeOverallStatus(feedResultList),
-                            "ticksProcessed", engine.getTickCount(feedFilter)
+                            "ticksProcessed", engine.getTickCount(feedFilter),
+                            "rejectedCount", engine.getRejectedCount(),
+                            "duplicateCount", engine.getDuplicateCount()
                     );
                 } else {
                     payload = globalPayload;
