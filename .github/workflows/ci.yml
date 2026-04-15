@@ -125,7 +125,7 @@ jobs:
         run: npm ci && npm run build
 
       - name: Copy frontend dist to backend static
-        run: cp -r frontend/dist/* backend/src/main/resources/static/
+        run: mkdir -p backend/src/main/resources/static && cp -r frontend/dist/* backend/src/main/resources/static/
 
       - name: Build backend JAR
         working-directory: backend
