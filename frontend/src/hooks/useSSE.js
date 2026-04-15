@@ -39,6 +39,10 @@ export default function useSSE(url, eventName, options = {}) {
   useEffect(() => {
     mountedRef.current = true;
 
+    // Clear stale data when URL/deps change (prevents race with late-arriving events)
+    setData([]);
+    setLatest(null);
+
     if (!enabled || !url || !eventName) {
       return;
     }
@@ -104,7 +108,11 @@ export default function useSSE(url, eventName, options = {}) {
 
     connect();
 
-    // Cleanup on unmount or dependency change
+    // Cleanup on unmount or dependency change.
+    // Order matters: cancel the reconnect timer BEFORE closing the EventSource.
+    // If the timer fires after mountedRef is false but before clearTimeout, the
+    // guard inside the callback prevents connect() from running. Cancelling first
+    // ensures no abandoned EventSource is ever created after cleanup.
     return () => {
       mountedRef.current = false;
       if (retryTimerRef.current) {

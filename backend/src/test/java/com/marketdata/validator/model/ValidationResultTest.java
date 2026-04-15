@@ -10,9 +10,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ValidationResultTest {
 
     @Test
-    void areaEnumHasAll8Values() {
-        // Blueprint specifies exactly 8 validation areas
-        assertThat(ValidationResult.Area.values()).hasSize(8);
+    void areaEnumHasAll9Values() {
+        // 9 validation areas: original 8 + SOURCE
+        assertThat(ValidationResult.Area.values()).hasSize(9);
         assertThat(ValidationResult.Area.values()).containsExactly(
                 ValidationResult.Area.ACCURACY,
                 ValidationResult.Area.LATENCY,
@@ -21,7 +21,8 @@ class ValidationResultTest {
                 ValidationResult.Area.THROUGHPUT,
                 ValidationResult.Area.ORDERING,
                 ValidationResult.Area.SUBSCRIPTION,
-                ValidationResult.Area.STATEFUL
+                ValidationResult.Area.STATEFUL,
+                ValidationResult.Area.SOURCE
         );
     }
 

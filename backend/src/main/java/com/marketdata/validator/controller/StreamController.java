@@ -9,6 +9,7 @@ import com.marketdata.validator.validator.ValidatorEngine;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -29,7 +30,7 @@ import java.util.function.Consumer;
  *
  * Blueprint Section 8 — Live Streaming Endpoints:
  *   GET /api/stream/ticks          — live tick stream (optional ?symbol= filter)
- *   GET /api/stream/validation     — live validation results (all 8 areas)
+ *   GET /api/stream/validation     — live validation results (all 9 areas)
  *   GET /api/stream/latency        — latency stats every 1 second
  *   GET /api/stream/throughput     — messages/sec every 1 second
  *
@@ -93,35 +94,44 @@ public class StreamController {
 
     /**
      * GET /api/stream/ticks — live tick stream.
-     * Optional query param: ?symbol=BTCUSDT to filter by symbol.
+     * Optional query params:
+     *   ?symbol=BTCUSDT  — filter by symbol (case-insensitive)
+     *   ?feedId=abc123   — filter to one feed connection (prevents LVWR numeric symbols
+     *                      appearing in the Binance view when both feeds are running)
      */
     @GetMapping("/ticks")
-    public SseEmitter streamTicks(@RequestParam(required = false) String symbol) {
+    public SseEmitter streamTicks(
+            @RequestParam(required = false) String symbol,
+            @RequestParam(required = false) String feedId) {
         SseEmitter emitter = createEmitter(tickEmitters);
 
-        // If symbol filter is set, wrap with a filtered listener
         if (symbol != null && !symbol.isBlank()) {
-            // Store the filter in emitter attributes — we check it during broadcast
-            emitter.onCompletion(() -> tickEmitters.remove(emitter));
-            emitter.onTimeout(() -> tickEmitters.remove(emitter));
-            emitter.onError(e -> tickEmitters.remove(emitter));
-            // Tag the emitter with the symbol filter (using a custom wrapper wouldn't scale,
-            // so we use a simple approach: store symbol in a concurrent map)
             symbolFilters.put(emitter, symbol.toUpperCase());
+        }
+        if (feedId != null && !feedId.isBlank()) {
+            feedIdFilters.put(emitter, feedId);
         }
 
         return emitter;
     }
 
-    // Symbol filter map — tracks which emitters have symbol filters
+    // Per-emitter filter maps
     private final ConcurrentHashMap<SseEmitter, String> symbolFilters = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<SseEmitter, String> feedIdFilters  = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<SseEmitter, String> validationFeedFilters = new ConcurrentHashMap<>();
 
     /**
-     * GET /api/stream/validation — live validation results (all 8 areas).
+     * GET /api/stream/validation — live validation results (all 9 areas).
+     * Optional ?feedId= scopes results to a single feed (Fix 8).
      */
     @GetMapping("/validation")
-    public SseEmitter streamValidation() {
-        return createEmitter(validationEmitters);
+    public SseEmitter streamValidation(
+            @RequestParam(required = false) String feedId) {
+        SseEmitter emitter = createEmitter(validationEmitters);
+        if (feedId != null && !feedId.isBlank()) {
+            validationFeedFilters.put(emitter, feedId);
+        }
+        return emitter;
     }
 
     /**
@@ -148,6 +158,28 @@ public class StreamController {
         return createEmitter(alertEmitters);
     }
 
+    /**
+     * GET /api/stream/stats — aggregated snapshot suitable for a dashboard header.
+     * Returns: totalTicks, messagesPerSecond (last second), peakPerSecond,
+     *          activeConnections, overallStatus, activeEmitters.
+     */
+    @GetMapping("/stats")
+    public ResponseEntity<Map<String, Object>> getStats() {
+        List<ValidationResult> results = engine.getResults();
+        long active = feedManager.getActiveConnectionCount();
+        Map<String, Object> stats = Map.of(
+                "timestamp", Instant.now(),
+                "totalTicks", totalTicksEver.get(),
+                "messagesPerSecond", ticksInWindow.get(),
+                "peakPerSecond", peakPerSecond,
+                "activeConnections", active,
+                "overallStatus", computeOverallStatus(results),
+                "activeEmitters", tickEmitters.size() + validationEmitters.size()
+                        + latencyEmitters.size() + throughputEmitters.size()
+        );
+        return ResponseEntity.ok(stats);
+    }
+
     // --- Internal: Tick handling ---
 
     private void onTick(Tick tick) {
@@ -156,10 +188,15 @@ public class StreamController {
 
         for (SseEmitter emitter : tickEmitters) {
             try {
-                // Check symbol filter
-                String filter = symbolFilters.get(emitter);
-                if (filter != null && !filter.equals(tick.getSymbol())) {
-                    continue; // Skip — doesn't match filter
+                // Apply feedId filter — skip if tick is from a different feed
+                String feedFilter = feedIdFilters.get(emitter);
+                if (feedFilter != null && !feedFilter.equals(tick.getFeedId())) {
+                    continue;
+                }
+                // Apply symbol filter
+                String symFilter = symbolFilters.get(emitter);
+                if (symFilter != null && !symFilter.equals(tick.getSymbol())) {
+                    continue;
                 }
 
                 emitter.send(SseEmitter.event()
@@ -174,15 +211,36 @@ public class StreamController {
     // --- Internal: Validation handling ---
 
     private void onValidationUpdate(List<ValidationResult> results) {
-        Map<String, Object> payload = Map.of(
+        // Global payload (no feed filter)
+        Map<String, Object> globalPayload = Map.of(
                 "timestamp", Instant.now(),
                 "results", engine.getResultsByArea(),
                 "overallStatus", computeOverallStatus(results),
-                "ticksProcessed", engine.getTickCount()
+                "ticksProcessed", engine.getTickCount(),
+                "rejectedCount", engine.getRejectedCount(),
+                "duplicateCount", engine.getDuplicateCount()
         );
 
         for (SseEmitter emitter : validationEmitters) {
             try {
+                String feedFilter = validationFeedFilters.get(emitter);
+                Map<String, Object> payload;
+                if (feedFilter != null) {
+                    // Per-feed scoped results (Fix 8)
+                    Map<String, ValidationResult> feedResults = engine.getResultsByArea(feedFilter);
+                    if (feedResults == null) feedResults = Map.of();
+                    List<ValidationResult> feedResultList = List.copyOf(feedResults.values());
+                    payload = Map.of(
+                            "timestamp", Instant.now(),
+                            "results", feedResults,
+                            "overallStatus", computeOverallStatus(feedResultList),
+                            "ticksProcessed", engine.getTickCount(feedFilter),
+                            "rejectedCount", engine.getRejectedCount(),
+                            "duplicateCount", engine.getDuplicateCount()
+                    );
+                } else {
+                    payload = globalPayload;
+                }
                 emitter.send(SseEmitter.event()
                         .name("validation")
                         .data(payload));
@@ -267,12 +325,24 @@ public class StreamController {
         emitter.onTimeout(() -> removeEmitter(emitter, emitterList));
         emitter.onError(e -> removeEmitter(emitter, emitterList));
 
+        // Send an initial comment to flush the HTTP response headers immediately.
+        // Without this, some proxies (e.g. Vite dev server) buffer the response
+        // until the first real event arrives, preventing the browser's EventSource
+        // from firing its 'open' event and showing as 'Disconnected'.
+        try {
+            emitter.send(SseEmitter.event().comment("connected"));
+        } catch (IOException e) {
+            removeEmitter(emitter, emitterList);
+        }
+
         return emitter;
     }
 
     private void removeEmitter(SseEmitter emitter, List<SseEmitter> emitterList) {
         emitterList.remove(emitter);
         symbolFilters.remove(emitter);
+        feedIdFilters.remove(emitter);
+        validationFeedFilters.remove(emitter);
     }
 
     // --- Internal: Formatting ---

@@ -47,7 +47,7 @@ class CompletenessValidatorTest {
 
         ValidationResult result = validator.getResult();
         assertThat(result.getStatus()).isEqualTo(ValidationResult.Status.PASS);
-        assertThat(validator.getGapCount()).isEqualTo(0);
+        assertThat(validator.getMissingSequenceCount()).isEqualTo(0);
     }
 
     // --- Gap detection ---
@@ -57,7 +57,7 @@ class CompletenessValidatorTest {
         feedTick("BTCUSDT", 1, BASE);
         feedTick("BTCUSDT", 3, BASE.plusSeconds(1)); // seq 2 missing
 
-        assertThat(validator.getGapCount()).isEqualTo(1);
+        assertThat(validator.getMissingSequenceCount()).isEqualTo(1);
     }
 
     @Test
@@ -65,7 +65,7 @@ class CompletenessValidatorTest {
         feedTick("BTCUSDT", 1, BASE);
         feedTick("BTCUSDT", 5, BASE.plusSeconds(1)); // seq 2,3,4 missing
 
-        assertThat(validator.getGapCount()).isEqualTo(3);
+        assertThat(validator.getMissingSequenceCount()).isEqualTo(3);
     }
 
     @Test
@@ -74,7 +74,7 @@ class CompletenessValidatorTest {
         feedTick("BTCUSDT", 3, BASE.plusSeconds(1)); // 1 gap
         feedTick("BTCUSDT", 6, BASE.plusSeconds(2)); // 2 more gaps
 
-        assertThat(validator.getGapCount()).isEqualTo(3); // Total: 1 + 2
+        assertThat(validator.getMissingSequenceCount()).isEqualTo(3); // Total: 1 + 2
     }
 
     @Test
@@ -84,14 +84,14 @@ class CompletenessValidatorTest {
         feedTick("BTCUSDT", 3, BASE.plusSeconds(1)); // 1 gap for BTC
         feedTick("ETHUSDT", 2, BASE.plusSeconds(1)); // no gap for ETH
 
-        assertThat(validator.getGapCount()).isEqualTo(1);
+        assertThat(validator.getMissingSequenceCount()).isEqualTo(1);
     }
 
     @Test
     void firstTickForSymbolNeverGap() {
         feedTick("BTCUSDT", 100, BASE); // First tick — seq 100, no prior → no gap
 
-        assertThat(validator.getGapCount()).isEqualTo(0);
+        assertThat(validator.getMissingSequenceCount()).isEqualTo(0);
     }
 
     // --- Status thresholds (percentage-based) ---
@@ -143,12 +143,20 @@ class CompletenessValidatorTest {
     }
 
     @Test
-    void symbolRecoveredFromStale() {
-        validator.configure(Map.of("heartbeatThresholdMs", 5000L));
+    void symbolRecoveredFromStaleAfterRecoveryWindow() {
+        // heartbeat=5s, recovery=10s: each recovery tick is 2s apart (< heartbeat threshold)
+        validator.configure(Map.of("heartbeatThresholdMs", 5000L, "staleRecoveryWindowMs", 10000L));
 
         feedTick("BTCUSDT", 1, BASE);
-        feedTick("BTCUSDT", 2, BASE.plusSeconds(10)); // stale
-        feedTick("BTCUSDT", 3, BASE.plusSeconds(11)); // 1s gap — recovered
+        feedTick("BTCUSDT", 2, BASE.plusSeconds(10)); // gap 10s > 5s → stale
+
+        // Recovery ticks arrive every 2s (< 5s heartbeat) for 10+ seconds
+        feedTick("BTCUSDT", 3, BASE.plusSeconds(12));  // recoveryStart; recovered = 0
+        feedTick("BTCUSDT", 4, BASE.plusSeconds(14));  // recovered = 2s
+        feedTick("BTCUSDT", 5, BASE.plusSeconds(16));  // recovered = 4s
+        feedTick("BTCUSDT", 6, BASE.plusSeconds(18));  // recovered = 6s
+        feedTick("BTCUSDT", 7, BASE.plusSeconds(20));  // recovered = 8s
+        feedTick("BTCUSDT", 8, BASE.plusSeconds(23));  // recovered = 11s ≥ 10s → cleared
 
         assertThat(validator.getStaleSymbols()).doesNotContain("BTCUSDT");
     }
@@ -199,12 +207,12 @@ class CompletenessValidatorTest {
         feedTick("BTCUSDT", 5, BASE.plusSeconds(1)); // gaps
 
         assertThat(validator.getTotalTicks()).isEqualTo(2);
-        assertThat(validator.getGapCount()).isEqualTo(3);
+        assertThat(validator.getMissingSequenceCount()).isEqualTo(3);
 
         validator.reset();
 
         assertThat(validator.getTotalTicks()).isEqualTo(0);
-        assertThat(validator.getGapCount()).isEqualTo(0);
+        assertThat(validator.getMissingSequenceCount()).isEqualTo(0);
         assertThat(validator.getStaleSymbols()).isEmpty();
         assertThat(validator.getTrackedSymbolCount()).isEqualTo(0);
         assertThat(validator.getResult().getStatus()).isEqualTo(ValidationResult.Status.PASS);
@@ -230,7 +238,8 @@ class CompletenessValidatorTest {
         feedTick("BTCUSDT", 3, BASE.plusSeconds(1));
 
         ValidationResult result = validator.getResult();
-        assertThat(result.getDetails()).containsKey("gapCount");
+        assertThat(result.getDetails()).containsKey("gapEventCount");
+        assertThat(result.getDetails()).containsKey("missingSequenceCount");
         assertThat(result.getDetails()).containsKey("staleSymbolCount");
         assertThat(result.getDetails()).containsKey("staleSymbols");
         assertThat(result.getDetails()).containsKey("totalTicks");
@@ -257,22 +266,31 @@ class CompletenessValidatorTest {
         feedTick("BTCUSDT", 1001, BASE.plusSeconds(1));
 
         // Gap of 999 (sequences 2 through 1000)
-        assertThat(validator.getGapCount()).isEqualTo(999);
+        assertThat(validator.getMissingSequenceCount()).isEqualTo(999);
     }
 
     @Test
     void recoveryFromStaleAfterNewTick() {
-        // Configure short heartbeat threshold for testing
-        validator.configure(Map.of("heartbeatThresholdMs", 100L));
+        // heartbeat=100ms, recovery=200ms: short windows for fast deterministic test
+        validator.configure(Map.of("heartbeatThresholdMs", 100L, "staleRecoveryWindowMs", 200L));
 
         feedTick("BTCUSDT", 1, BASE);
-        // Next tick arrives well after threshold
+        // Gap of 500ms > 100ms heartbeat → symbol goes stale
         feedTick("BTCUSDT", 2, BASE.plusMillis(500));
 
-        // Symbol was stale but should recover after receiving tick 2
-        ValidationResult result = validator.getResult();
-        // The symbol should no longer be stale since it just got a tick
-        assertThat(result).isNotNull();
+        assertThat(validator.getStaleSymbols())
+                .as("symbol must be stale after gap exceeds heartbeat threshold")
+                .contains("BTCUSDT");
+
+        // Feed recovery ticks within heartbeat threshold spanning > 200ms recovery window
+        feedTick("BTCUSDT", 3, BASE.plusMillis(550));  // recoveryStart
+        feedTick("BTCUSDT", 4, BASE.plusMillis(600));   // 50ms into recovery
+        feedTick("BTCUSDT", 5, BASE.plusMillis(700));   // 150ms into recovery
+        feedTick("BTCUSDT", 6, BASE.plusMillis(800));   // 250ms ≥ 200ms → cleared
+
+        assertThat(validator.getStaleSymbols())
+                .as("symbol must recover after ticks span recovery window")
+                .doesNotContain("BTCUSDT");
     }
 
     @Test
@@ -280,7 +298,7 @@ class CompletenessValidatorTest {
         // First tick for any symbol should never be a gap, regardless of seq num
         feedTick("BTCUSDT", 100, BASE);
 
-        assertThat(validator.getGapCount()).isEqualTo(0);
+        assertThat(validator.getMissingSequenceCount()).isEqualTo(0);
         assertThat(validator.getResult().getStatus()).isEqualTo(ValidationResult.Status.PASS);
     }
 
@@ -296,7 +314,52 @@ class CompletenessValidatorTest {
 
         assertThat(validator.getTrackedSymbolCount()).isEqualTo(20);
         assertThat(validator.getTotalTicks()).isEqualTo(100);
-        assertThat(validator.getGapCount()).isEqualTo(0);
+        assertThat(validator.getMissingSequenceCount()).isEqualTo(0);
+    }
+
+    // --- Hysteresis: stale symbol requires 30s recovery window before clearing ---
+
+    @Test
+    void staleSymbolNotImmediatelyRecoveredAfterOneTick() {
+        // heartbeat=5s, recovery=10s: same config as symbolRecoveredFromStaleAfterRecoveryWindow
+        validator.configure(Map.of("heartbeatThresholdMs", 5000L, "staleRecoveryWindowMs", 10000L));
+
+        Instant base = Instant.parse("2026-01-01T00:00:00Z");
+        feedTick("BTCUSDT", 1, base);
+        feedTick("BTCUSDT", 2, base.plusSeconds(10)); // gap 10s > 5s → stale
+
+        assertThat(validator.getStaleSymbols()).contains("BTCUSDT");
+
+        // One recovery tick arrives within threshold — but recovery window (10s) has not elapsed
+        feedTick("BTCUSDT", 3, base.plusSeconds(12));
+
+        // Symbol must still be stale — one tick does not clear it
+        assertThat(validator.getStaleSymbols())
+                .as("symbol must remain stale until recovery window elapses")
+                .contains("BTCUSDT");
+    }
+
+    @Test
+    void staleSymbolRecoveredAfterRecoveryWindowElapsed() {
+        // heartbeat=5s, recovery=10s: recovery ticks every 2s (< heartbeat) for > 10s
+        validator.configure(Map.of("heartbeatThresholdMs", 5000L, "staleRecoveryWindowMs", 10000L));
+
+        Instant base = Instant.parse("2026-01-01T00:00:00Z");
+        feedTick("BTCUSDT", 1, base);
+        feedTick("BTCUSDT", 2, base.plusSeconds(10)); // goes stale
+
+        assertThat(validator.getStaleSymbols()).contains("BTCUSDT");
+
+        feedTick("BTCUSDT", 3, base.plusSeconds(12));  // recoveryStart; recovered = 0
+        feedTick("BTCUSDT", 4, base.plusSeconds(14));  // recovered = 2s
+        feedTick("BTCUSDT", 5, base.plusSeconds(16));  // recovered = 4s
+        feedTick("BTCUSDT", 6, base.plusSeconds(18));  // recovered = 6s
+        feedTick("BTCUSDT", 7, base.plusSeconds(20));  // recovered = 8s
+        feedTick("BTCUSDT", 8, base.plusSeconds(23));  // recovered = 11s ≥ 10s → cleared
+
+        assertThat(validator.getStaleSymbols())
+                .as("symbol must be removed from staleSymbols after recovery window elapses")
+                .doesNotContain("BTCUSDT");
     }
 
     // --- Helpers ---

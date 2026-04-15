@@ -12,6 +12,7 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Monitors message throughput, detects rate drops and zero-throughput stalls.
@@ -46,6 +47,10 @@ public class ThroughputValidator implements Validator {
     private static final int DEFAULT_ZERO_THRESHOLD_SECS = 5;  // 0 msg/s for 5s = FAIL
 
     // --- Circular buffer for per-second counts ---
+    // bufferLock guards secondCounts[], head, and filled: tick() (timer thread) writes
+    // and reads the array to compute the rolling average; without a lock, concurrent
+    // tick() calls can interleave writes and corrupt the rolling average calculation.
+    private final ReentrantLock bufferLock = new ReentrantLock();
     private final long[] secondCounts;
     private int head = 0;           // Next write position
     private int filled = 0;        // How many slots are filled (up to windowSize)
@@ -113,22 +118,27 @@ public class ThroughputValidator implements Validator {
         long rate = currentSecondCount.getAndSet(0);
         lastSecondRate = rate;
 
-        // Write into circular buffer
-        secondCounts[head] = rate;
-        head = (head + 1) % windowSize;
-        if (filled < windowSize) filled++;
+        bufferLock.lock();
+        try {
+            // Write into circular buffer
+            secondCounts[head] = rate;
+            head = (head + 1) % windowSize;
+            if (filled < windowSize) filled++;
 
-        // Update max
-        if (rate > maxThroughput) {
-            maxThroughput = rate;
-        }
+            // Update max
+            if (rate > maxThroughput) {
+                maxThroughput = rate;
+            }
 
-        // Calculate rolling average
-        long sum = 0;
-        for (int i = 0; i < filled; i++) {
-            sum += secondCounts[i];
+            // Calculate rolling average
+            long sum = 0;
+            for (int i = 0; i < filled; i++) {
+                sum += secondCounts[i];
+            }
+            rollingAverage = filled > 0 ? (double) sum / filled : 0.0;
+        } finally {
+            bufferLock.unlock();
         }
-        rollingAverage = filled > 0 ? (double) sum / filled : 0.0;
 
         // Drop detection: current rate < 50% of rolling average (only check after warmup)
         if (filled >= 5 && rollingAverage > 0) {

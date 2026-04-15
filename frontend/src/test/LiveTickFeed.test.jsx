@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import LiveTickFeed from '../components/LiveTickFeed';
 
 // --- Mock useSSE hook ---
@@ -22,8 +22,19 @@ function defaultSSE(overrides = {}) {
   };
 }
 
+// Sample connections returned by /api/feeds
+const MOCK_FEEDS = [
+  { id: 'binance-1', name: 'Binance BTC', adapterType: 'BINANCE' },
+  { id: 'lvwr-1',    name: 'LVWR Feed',  adapterType: 'LVWR_T'  },
+];
+
+let mockFetch;
+
 beforeEach(() => {
   mockUseSSE.mockReturnValue(defaultSSE());
+  // Mock fetch so /api/feeds returns the sample connections list
+  mockFetch = vi.fn().mockResolvedValue({ ok: true, json: async () => MOCK_FEEDS });
+  global.fetch = mockFetch;
 });
 
 afterEach(() => {
@@ -246,5 +257,58 @@ describe('LiveTickFeed', () => {
 
     const rows = container.querySelectorAll('tbody tr');
     expect(rows.length).toBe(100);
+  });
+
+  // --- Feed selector tests ---
+
+  it('renders feed selector with All feeds default', async () => {
+    render(<LiveTickFeed />);
+    await waitFor(() => expect(screen.getByRole('combobox')).toBeInTheDocument());
+    expect(screen.getByRole('combobox').value).toBe('');
+    expect(screen.getByText('All feeds')).toBeInTheDocument();
+  });
+
+  it('populates feed selector from /api/feeds', async () => {
+    render(<LiveTickFeed />);
+    await waitFor(() => expect(screen.getByText('Binance BTC (BINANCE)')).toBeInTheDocument());
+    expect(screen.getByText('LVWR Feed (LVWR_T)')).toBeInTheDocument();
+  });
+
+  it('includes feedId in SSE URL when a feed is selected', async () => {
+    render(<LiveTickFeed />);
+    await waitFor(() => expect(screen.getByText('Binance BTC (BINANCE)')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'binance-1' } });
+
+    expect(mockUseSSE).toHaveBeenCalledWith(
+      '/api/stream/ticks?feedId=binance-1',
+      'tick',
+      expect.objectContaining({ maxItems: 500 })
+    );
+  });
+
+  it('combines feedId and symbol filters in SSE URL', async () => {
+    render(<LiveTickFeed />);
+    await waitFor(() => expect(screen.getByText('Binance BTC (BINANCE)')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'binance-1' } });
+    fireEvent.change(screen.getByPlaceholderText('Filter by symbol…'), { target: { value: 'btcusdt' } });
+
+    expect(mockUseSSE).toHaveBeenCalledWith(
+      '/api/stream/ticks?feedId=binance-1&symbol=BTCUSDT',
+      'tick',
+      expect.objectContaining({ maxItems: 500 })
+    );
+  });
+
+  it('shows selected feed name in status bar', async () => {
+    const { container } = render(<LiveTickFeed />);
+    await waitFor(() => expect(screen.getByText('Binance BTC (BINANCE)')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'binance-1' } });
+
+    // The feed-source-label span should contain the selected feed's name
+    const label = container.querySelector('.feed-source-label');
+    expect(label.textContent).toContain('Binance BTC');
   });
 });

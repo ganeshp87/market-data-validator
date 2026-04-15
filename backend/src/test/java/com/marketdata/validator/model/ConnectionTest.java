@@ -98,11 +98,12 @@ class ConnectionTest {
 
     @Test
     void allAdapterTypesExist() {
-        // Verify all 3 adapter types from the blueprint exist
-        assertThat(Connection.AdapterType.values()).containsExactly(
+        // Verify all 4 adapter types exist (LVWR_T added in Phase 2)
+        assertThat(Connection.AdapterType.values()).containsExactlyInAnyOrder(
                 Connection.AdapterType.BINANCE,
                 Connection.AdapterType.FINNHUB,
-                Connection.AdapterType.GENERIC
+                Connection.AdapterType.GENERIC,
+                Connection.AdapterType.LVWR_T
         );
     }
 

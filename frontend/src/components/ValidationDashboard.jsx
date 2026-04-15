@@ -1,22 +1,23 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import useSSE from '../hooks/useSSE';
 
 /**
- * ValidationDashboard — 8-area pass/warn/fail cards with live SSE updates.
+ * ValidationDashboard — 9-area pass/warn/fail cards with live SSE updates.
  *
  * Blueprint Section 6.2:
- *   - 8 cards (ACCURACY, LATENCY, COMPLETENESS, RECONNECTION,
- *     THROUGHPUT, ORDERING, SUBSCRIPTION, STATEFUL)
+ *   - 9 cards (ACCURACY, LATENCY, COMPLETENESS, RECONNECTION,
+ *     THROUGHPUT, ORDERING, SUBSCRIPTION, STATEFUL, SOURCE)
  *   - Each card: status icon, area name, metric, threshold, message
  *   - Click card → expands to show detailed results
  *   - Overall status banner at top
  *
  * Uses: useSSE('/api/stream/validation', 'validation') for live updates
+ * Fix 8: Feed scope selector dropdown filters metrics per feed.
  */
 
 const ALL_AREAS = [
   'ACCURACY', 'LATENCY', 'COMPLETENESS', 'RECONNECTION',
-  'THROUGHPUT', 'ORDERING', 'SUBSCRIPTION', 'STATEFUL',
+  'THROUGHPUT', 'ORDERING', 'SUBSCRIPTION', 'STATEFUL', 'SOURCE',
 ];
 
 const STATUS_ICONS = {
@@ -32,8 +33,27 @@ const STATUS_CLASSES = {
 };
 
 export default function ValidationDashboard() {
+  const [feeds, setFeeds] = useState([]);
+  const [selectedFeed, setSelectedFeed] = useState('');
+
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        const res = await fetch('/api/validation/feeds');
+        if (res.ok) setFeeds(await res.json());
+      } catch { /* ignore */ }
+    };
+    poll();
+    const interval = setInterval(poll, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const sseUrl = selectedFeed
+    ? `/api/stream/validation?feedId=${encodeURIComponent(selectedFeed)}`
+    : '/api/stream/validation';
+
   const { latest, connected, error } = useSSE(
-    '/api/stream/validation',
+    sseUrl,
     'validation',
     { maxItems: 1 }
   );
@@ -41,16 +61,40 @@ export default function ValidationDashboard() {
   const results = latest?.results || {};
   const overallStatus = latest?.overallStatus || 'PASS';
   const ticksProcessed = latest?.ticksProcessed || 0;
+  const rejectedCount = latest?.rejectedCount || 0;
+  const duplicateCount = latest?.duplicateCount || 0;
+
+  const scopeLabel = selectedFeed
+    ? `Feed: ${feeds.find(f => f.id === selectedFeed)?.name || selectedFeed}`
+    : 'Global (all feeds)';
 
   return (
     <div className="validation-dashboard">
       <div className="vd-header">
         <h2>Validation Dashboard</h2>
         <div className="vd-summary">
+          <select
+            className="sim-scenario-select"
+            style={{ maxWidth: '220px', fontSize: '0.85em' }}
+            value={selectedFeed}
+            onChange={e => setSelectedFeed(e.target.value)}
+          >
+            <option value="">Global (all feeds)</option>
+            {feeds.map(f => (
+              <option key={f.id} value={f.id}>{f.name}</option>
+            ))}
+          </select>
+          <span style={{ fontSize: '0.8em', opacity: 0.7, marginLeft: '6px' }}>Scope: {scopeLabel}</span>
           <span className={`vd-overall ${STATUS_CLASSES[overallStatus] || ''}`}>
             {STATUS_ICONS[overallStatus] || '⚪'} Overall: {overallStatus}
           </span>
           <span className="vd-ticks">{ticksProcessed.toLocaleString()} ticks processed</span>
+          {rejectedCount > 0 && (
+            <span className="vd-rejected">{rejectedCount.toLocaleString()} rejected</span>
+          )}
+          {duplicateCount > 0 && (
+            <span className="vd-duplicates">{duplicateCount.toLocaleString()} duplicates</span>
+          )}
           <span className={`status-dot ${connected ? 'green' : 'red'}`} />
         </div>
       </div>
@@ -101,6 +145,13 @@ function ValidationCard({ area, result }) {
             )}
           </div>
         )}
+        {area === 'COMPLETENESS' && (details.gapEventCount != null || details.missingSequenceCount != null) && (
+          <div className="vd-completeness-detail">
+            <span>Gap events: {Number(details.gapEventCount ?? 0).toLocaleString()}</span>
+            {' | '}
+            <span>Missing seqNums: {Number(details.missingSequenceCount ?? 0).toLocaleString()}</span>
+          </div>
+        )}
       </div>
 
       {expanded && Object.keys(details).length > 0 && (
@@ -129,6 +180,7 @@ function formatAreaName(area) {
     ORDERING: 'Ordering',
     SUBSCRIPTION: 'Subscription',
     STATEFUL: 'Stateful',
+    SOURCE: 'Source',
   };
   return names[area] || area;
 }
@@ -145,10 +197,12 @@ function formatMetric(area, value) {
     case 'THROUGHPUT':
       return `${Number(value).toLocaleString()} msg/s`;
     case 'COMPLETENESS':
-      return `${Number(value)} gaps`;
+      return `${Number(value).toFixed(2)}%`;
     case 'RECONNECTION':
     case 'SUBSCRIPTION':
       return String(value);
+    case 'SOURCE':
+      return `${Number(value).toFixed(2)}%`;
     default:
       return String(value);
   }

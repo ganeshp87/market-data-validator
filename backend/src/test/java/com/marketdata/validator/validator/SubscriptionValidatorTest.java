@@ -6,6 +6,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 
@@ -143,14 +144,17 @@ class SubscriptionValidatorTest {
     // --- Leaky unsubscribes ---
 
     @Test
-    void detectsLeakyUnsubscribe() throws InterruptedException {
+    void detectsLeakyUnsubscribe() {
+        ManualClock clock = new ManualClock(Instant.parse("2026-01-01T00:00:00Z"));
+        validator.setClock(clock);
+
         validator.onSubscribe("BTCUSDT");
         feedTick("BTCUSDT", 1);
 
         validator.onUnsubscribe("BTCUSDT");
 
-        // Wait past the grace period (50ms in test config)
-        Thread.sleep(80);
+        // Advance past the grace period (50ms in test config)
+        clock.advance(Duration.ofMillis(80));
 
         feedTick("BTCUSDT", 2); // Tick arrives AFTER grace period → leak!
 
@@ -171,12 +175,15 @@ class SubscriptionValidatorTest {
     }
 
     @Test
-    void resubscribeClearsLeakyState() throws InterruptedException {
+    void resubscribeClearsLeakyState() {
+        ManualClock clock = new ManualClock(Instant.parse("2026-01-01T00:00:00Z"));
+        validator.setClock(clock);
+
         validator.onSubscribe("BTCUSDT");
         feedTick("BTCUSDT", 1);
         validator.onUnsubscribe("BTCUSDT");
 
-        Thread.sleep(80);
+        clock.advance(Duration.ofMillis(80));
         feedTick("BTCUSDT", 2); // Leaky
 
         assertThat(validator.getLeakyUnsubscribes()).contains("BTCUSDT");
@@ -216,11 +223,14 @@ class SubscriptionValidatorTest {
     }
 
     @Test
-    void subscribeTimeoutProducesWarn() throws InterruptedException {
+    void subscribeTimeoutProducesWarn() {
+        ManualClock clock = new ManualClock(Instant.parse("2026-01-01T00:00:00Z"));
+        validator.setClock(clock);
+
         validator.onSubscribe("BTCUSDT");
 
-        // Wait past the subscribe timeout (100ms in test config)
-        Thread.sleep(150);
+        // Advance past the subscribe timeout (100ms in test config)
+        clock.advance(Duration.ofMillis(150));
 
         // Still no tick → timed out
         ValidationResult result = validator.getResult();
@@ -231,12 +241,15 @@ class SubscriptionValidatorTest {
     // --- Result: FAIL ---
 
     @Test
-    void leakyUnsubscribeProducesFail() throws InterruptedException {
+    void leakyUnsubscribeProducesFail() {
+        ManualClock clock = new ManualClock(Instant.parse("2026-01-01T00:00:00Z"));
+        validator.setClock(clock);
+
         validator.onSubscribe("BTCUSDT");
         feedTick("BTCUSDT", 1);
         validator.onUnsubscribe("BTCUSDT");
 
-        Thread.sleep(80);
+        clock.advance(Duration.ofMillis(80));
         feedTick("BTCUSDT", 2); // Leaky
 
         ValidationResult result = validator.getResult();
@@ -245,13 +258,16 @@ class SubscriptionValidatorTest {
     }
 
     @Test
-    void allInactiveProducesFail() throws InterruptedException {
+    void allInactiveProducesFail() {
+        ManualClock clock = new ManualClock(Instant.parse("2026-01-01T00:00:00Z"));
+        validator.setClock(clock);
         validator.configure(Map.of("activeThresholdMs", 50L));
+
         validator.onSubscribe("BTCUSDT");
         feedTick("BTCUSDT", 1);
 
-        // Wait for tick to become stale
-        Thread.sleep(80);
+        // Advance past active threshold
+        clock.advance(Duration.ofMillis(80));
 
         // Now subscribed but not active (last tick is stale)
         ValidationResult result = validator.getResult();

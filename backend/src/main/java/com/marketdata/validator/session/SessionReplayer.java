@@ -24,6 +24,7 @@ import java.util.function.Consumer;
 public class SessionReplayer {
 
     private static final Logger log = LoggerFactory.getLogger(SessionReplayer.class);
+    private static final double MAX_REPLAY_SPEED = 1000.0;
 
     public enum State { IDLE, REPLAYING, PAUSED, COMPLETED, FAILED }
 
@@ -49,12 +50,66 @@ public class SessionReplayer {
 
     public record ReplayProgress(State state, int ticksReplayed, int totalTicks, double speedFactor) {}
 
+    /**
+     * Thrown by {@link #replaySync} when the engine raises an exception mid-replay.
+     * Carries the number of ticks processed before the failure and the failing tick's symbol.
+     */
+    public static class ReplayException extends RuntimeException {
+        private final int ticksProcessed;
+        private final String failingSymbol;
+
+        public ReplayException(String message, int ticksProcessed, String failingSymbol, Throwable cause) {
+            super(message, cause);
+            this.ticksProcessed = ticksProcessed;
+            this.failingSymbol = failingSymbol;
+        }
+
+        public int getTicksProcessed() { return ticksProcessed; }
+        public String getFailingSymbol() { return failingSymbol; }
+    }
+
+    /**
+     * Synchronous replay for REST callers: validates speed, resets the engine, and
+     * feeds every tick to the engine in the calling thread (no background thread).
+     *
+     * @param sessionId session to replay
+     * @param speed     replay speed factor; must be in (0, 1000]
+     * @return the full list of ticks replayed
+     * @throws IllegalArgumentException if speed is out of range
+     * @throws ReplayException          if the engine throws while processing a tick
+     */
+    public List<Tick> replaySync(long sessionId, double speed) {
+        if (speed <= 0 || speed > MAX_REPLAY_SPEED) {
+            throw new IllegalArgumentException(
+                    "Replay speed must be between 0 and 1000. Use speed=1000 for maximum fast-forward.");
+        }
+
+        List<Tick> ticks = tickStore.findBySessionId(sessionId);
+        engine.reset();
+
+        int processed = 0;
+        try {
+            for (Tick tick : ticks) {
+                engine.onTick(tick);
+                processed++;
+            }
+        } catch (Exception e) {
+            Tick failingTick = processed < ticks.size() ? ticks.get(processed) : null;
+            String failingSymbol = failingTick != null ? failingTick.getFeedScopedSymbol() : "unknown";
+            engine.reset();
+            throw new ReplayException(e.getMessage(), processed, failingSymbol, e);
+        }
+
+        return ticks;
+    }
+
     public void start(long sessionId, double speed) {
         if (state == State.REPLAYING || state == State.PAUSED) {
             throw new IllegalStateException("Replay already in progress");
         }
-        if (speed <= 0) {
-            throw new IllegalArgumentException("Speed must be positive");
+        if (speed <= 0 || speed > MAX_REPLAY_SPEED) {
+            throw new IllegalArgumentException(
+                    "Replay speed must be between 0 and 1000. Use speed=1000 for maximum fast-forward.");
         }
 
         Session session = sessionStore.findById(sessionId)
@@ -151,8 +206,9 @@ public class SessionReplayer {
     }
 
     public void setSpeed(double speed) {
-        if (speed <= 0) {
-            throw new IllegalArgumentException("Speed must be positive");
+        if (speed <= 0 || speed > MAX_REPLAY_SPEED) {
+            throw new IllegalArgumentException(
+                    "Replay speed must be between 0 and 1000. Use speed=1000 for maximum fast-forward.");
         }
         this.speedFactor = speed;
     }

@@ -6,6 +6,7 @@ import com.marketdata.validator.model.Tick;
 import com.marketdata.validator.model.ValidationResult;
 import com.marketdata.validator.session.SessionExporter;
 import com.marketdata.validator.session.SessionRecorder;
+import com.marketdata.validator.session.SessionReplayer;
 import com.marketdata.validator.store.SessionStore;
 import com.marketdata.validator.store.TickStore;
 import com.marketdata.validator.validator.ValidatorEngine;
@@ -52,6 +53,9 @@ class SessionControllerTest {
 
     @MockBean
     private SessionExporter exporter;
+
+    @MockBean
+    private SessionReplayer replayer;
 
     @Autowired
     private ObjectMapper objectMapper;
@@ -280,7 +284,7 @@ class SessionControllerTest {
         when(sessionStore.findById(1L)).thenReturn(Optional.of(completedSession(1L, "Test")));
         Tick tick = new Tick("BTCUSDT", new BigDecimal("45000"), new BigDecimal("1"),
                 1L, Instant.now(), "feed-1");
-        when(tickStore.findBySessionId(1L)).thenReturn(List.of(tick));
+        when(replayer.replaySync(1L, 1.0)).thenReturn(List.of(tick));
         when(engine.getResults()).thenReturn(List.of(
                 ValidationResult.pass(ValidationResult.Area.ACCURACY, "OK", 0, 0)));
 
@@ -290,8 +294,7 @@ class SessionControllerTest {
                 .andExpect(jsonPath("$.ticksReplayed", is(1)))
                 .andExpect(jsonPath("$.results", hasSize(1)));
 
-        verify(engine).reset();
-        verify(engine).onTick(any(Tick.class));
+        verify(replayer).replaySync(1L, 1.0);
     }
 
     @Test
@@ -303,16 +306,66 @@ class SessionControllerTest {
     }
 
     @Test
-    void replayResetsEngineBeforeReplay() throws Exception {
+    void replayDelegatesToReplayerWithDefaultSpeed() throws Exception {
         when(sessionStore.findById(1L)).thenReturn(Optional.of(completedSession(1L, "Test")));
-        when(tickStore.findBySessionId(1L)).thenReturn(List.of());
+        when(replayer.replaySync(1L, 1.0)).thenReturn(List.of());
         when(engine.getResults()).thenReturn(List.of());
 
         mvc.perform(post("/api/sessions/1/replay"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.ticksReplayed", is(0)));
 
-        verify(engine).reset();
+        verify(replayer).replaySync(1L, 1.0);
+    }
+
+    @Test
+    void replayReturnsStructuredErrorWhenValidatorThrows() throws Exception {
+        when(sessionStore.findById(1L)).thenReturn(Optional.of(completedSession(1L, "Test")));
+        when(replayer.replaySync(1L, 1.0)).thenThrow(
+                new SessionReplayer.ReplayException("validator exploded", 1, "feed-1:ETHUSDT",
+                        new RuntimeException("validator exploded")));
+
+        mvc.perform(post("/api/sessions/1/replay"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.error", is("validator exploded")))
+                .andExpect(jsonPath("$.ticksProcessedBeforeFailure", is(1)));
+    }
+
+    @Test
+    void replayEndpointRejectsSpeedZero() throws Exception {
+        when(sessionStore.findById(1L)).thenReturn(Optional.of(completedSession(1L, "Test")));
+        when(replayer.replaySync(1L, 0.0)).thenThrow(
+                new IllegalArgumentException("Replay speed must be between 0 and 1000. Use speed=1000 for maximum fast-forward."));
+
+        mvc.perform(post("/api/sessions/1/replay?speed=0"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error", containsString("0 and 1000")));
+    }
+
+    @Test
+    void replayEndpointRejectsSpeedAboveMax() throws Exception {
+        when(sessionStore.findById(1L)).thenReturn(Optional.of(completedSession(1L, "Test")));
+        when(replayer.replaySync(1L, 1001.0)).thenThrow(
+                new IllegalArgumentException("Replay speed must be between 0 and 1000. Use speed=1000 for maximum fast-forward."));
+
+        mvc.perform(post("/api/sessions/1/replay?speed=1001"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error", containsString("0 and 1000")));
+    }
+
+    @Test
+    void replayEndpointAcceptsMaxSpeed() throws Exception {
+        when(sessionStore.findById(1L)).thenReturn(Optional.of(completedSession(1L, "Test")));
+        Tick tick = new Tick("BTCUSDT", new BigDecimal("45000"), new BigDecimal("1"),
+                1L, Instant.now(), "feed-1");
+        when(replayer.replaySync(1L, 1000.0)).thenReturn(List.of(tick));
+        when(engine.getResults()).thenReturn(List.of());
+
+        mvc.perform(post("/api/sessions/1/replay?speed=1000"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.ticksReplayed", is(1)));
+
+        verify(replayer).replaySync(1L, 1000.0);
     }
 
     // --- Helpers ---

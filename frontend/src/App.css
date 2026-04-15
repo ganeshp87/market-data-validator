@@ -173,6 +173,11 @@ body {
   font-size: 13px;
 }
 
+.feed-source-label {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
 .status-dot {
   width: 8px;
   height: 8px;
@@ -198,6 +203,29 @@ body {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+.feed-filter-select {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  min-width: 160px;
+  cursor: pointer;
+  appearance: auto;
+  transition: border-color 0.15s;
+}
+
+.feed-filter-select:hover {
+  border-color: var(--accent);
+}
+
+.feed-filter-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
 }
 
 .symbol-filter {
@@ -1082,8 +1110,9 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 500px;
+  max-height: calc(100vh - 140px);
   overflow-y: auto;
+  padding-bottom: 12px;
 }
 
 .ap-card {
@@ -1235,3 +1264,227 @@ body {
   color: var(--yellow);
   font-weight: 600;
 }
+
+/* ================================================================
+   BADGES (new-badge, alert-count-badge)
+   ================================================================ */
+.new-badge {
+  font-size: 9px;
+  background: rgba(74, 158, 255, 0.2);
+  color: var(--accent);
+  padding: 1px 5px;
+  border-radius: 8px;
+  font-weight: 500;
+}
+.alert-count-badge {
+  background: var(--red);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 10px;
+  margin-left: 4px;
+}
+
+/* ================================================================
+   SIMULATOR PAGE
+   ================================================================ */
+.simulator-page { padding: 0; }
+.sim-page-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  max-width: 1000px;
+}
+.sim-page-left, .sim-page-right {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px;
+}
+.panel-section { margin-bottom: 16px; }
+.panel-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.sim-mode-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.mode-btn {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: center;
+  transition: background 0.15s, color 0.15s;
+}
+.mode-btn:hover { background: var(--bg-card); color: var(--text-primary); }
+.mode-btn.selected { border-color: var(--red); background: rgba(248, 113, 113, 0.15); color: var(--red); font-weight: 500; }
+.mode-btn.selected-clean { border-color: var(--green); background: rgba(52, 211, 153, 0.15); color: var(--green); font-weight: 500; }
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.slider-label { font-size: 12px; color: var(--text-secondary); min-width: 80px; }
+.slider-val { font-size: 12px; font-weight: 500; color: var(--text-primary); min-width: 32px; text-align: right; }
+.slider-row input[type="range"] { accent-color: var(--accent); }
+.btn {
+  font-size: 12px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.btn:hover { background: var(--bg-card); }
+.btn-red { border-color: var(--red); color: var(--red); background: rgba(248, 113, 113, 0.15); }
+.btn-green { border-color: var(--green); color: var(--green); background: rgba(52, 211, 153, 0.15); }
+.failure-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+}
+.failure-chip {
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  display: flex;
+  justify-content: space-between;
+}
+.failure-chip.firing { background: rgba(248, 113, 113, 0.15); border-color: var(--red); color: var(--red); }
+.chip-count { font-weight: 500; }
+
+.sim-stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.sim-stat-row:last-child { border-bottom: none; }
+.sim-stat-row > span:first-child { color: var(--text-secondary); }
+.sim-stat-row > span:last-child { color: var(--text-primary); font-weight: 500; font-variant-numeric: tabular-nums; }
+
+.sim-hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 6px 0 4px;
+  font-style: italic;
+}
+
+.sim-scenario-select {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  margin-bottom: 4px;
+  padding: 6px 8px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  outline: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238b8fa3'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  padding-right: 24px;
+}
+.sim-scenario-select:focus { border-color: var(--accent); }
+.sim-scenario-select option { background: var(--bg-secondary); color: var(--text-primary); }
+
+.sim-scenario-hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+  padding: 6px 8px;
+  background: rgba(74, 158, 255, 0.07);
+  border-left: 2px solid var(--accent);
+  border-radius: 0 4px 4px 0;
+  margin-top: 4px;
+}
+.sim-scenario-hint b { color: var(--text-primary); }
+
+.btn-apply-ok { border-color: var(--green); color: var(--green); background: rgba(52, 211, 153, 0.15); }
+.btn-pending { border-color: var(--yellow); color: var(--yellow); background: rgba(251, 191, 36, 0.12); }
+.btn-pending:hover { background: rgba(251, 191, 36, 0.22); }
+.sim-pending-hint { font-size: 11px; color: var(--yellow); text-align: center; margin-top: 4px; }
+.btn-accent { border-color: var(--accent); color: var(--accent); background: rgba(74, 158, 255, 0.12); }
+.btn-accent:hover { background: rgba(74, 158, 255, 0.22); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ================================================================
+   VALIDATOR SUMMARY
+   ================================================================ */
+.validator-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.v-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+}
+.v-card.fail { background: rgba(248, 113, 113, 0.12); border-color: var(--red); }
+.v-card.warn { background: rgba(251, 191, 36, 0.12); border-color: var(--yellow); }
+.v-card.pass { background: rgba(52, 211, 153, 0.12); border-color: var(--green); }
+.v-name { font-size: 11px; font-weight: 500; margin-bottom: 2px; }
+.v-card.fail .v-name { color: var(--red); }
+.v-card.warn .v-name { color: var(--yellow); }
+.v-card.pass .v-name { color: var(--green); }
+.v-status { font-size: 10px; color: var(--text-secondary); }
+.v-card.fail .v-status { color: var(--red); }
+.v-card.warn .v-status { color: var(--yellow); }
+.v-card.pass .v-status { color: var(--green); }
+.v-metric { font-size: 12px; font-weight: 500; margin-top: 3px; }
+.v-card.fail .v-metric { color: var(--red); }
+.v-card.warn .v-metric { color: var(--yellow); }
+.v-card.pass .v-metric { color: var(--green); }
+
+/* ================================================================
+   COMPLIANCE PAGE
+   ================================================================ */
+.compliance-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.compliance-row:last-child { border-bottom: none; }
+.compliance-pass { color: var(--green); font-weight: 500; }
+.compliance-warn { color: var(--yellow); font-weight: 500; }
+.compliance-fail { color: var(--red); font-weight: 500; }
+
+/* ================================================================
+   ADD FEED DIALOG — LVWR_T extras
+   ================================================================ */
+.cm-sim-info { font-size: 11px; color: var(--text-secondary); padding: 8px 0; }
+.cm-sim-controls { margin-top: 8px; }
+.cm-sim-controls label { margin-bottom: 6px; }
+.cm-radio-group { display: flex; gap: 12px; margin-top: 4px; }
+.cm-radio { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-primary); }
+.cm-radio input[type="radio"] { accent-color: var(--accent); }
+

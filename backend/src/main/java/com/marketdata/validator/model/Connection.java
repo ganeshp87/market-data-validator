@@ -12,7 +12,7 @@ import java.util.UUID;
 public class Connection {
 
     public enum AdapterType {
-        BINANCE, FINNHUB, GENERIC
+        BINANCE, FINNHUB, GENERIC, LVWR_T
     }
 
     public enum Status {

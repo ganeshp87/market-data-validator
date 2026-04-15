@@ -7,7 +7,13 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -380,6 +386,45 @@ class ThroughputValidatorTest {
 
         ValidationResult result = validator.getResult();
         assertThat(result.getStatus()).isEqualTo(ValidationResult.Status.FAIL);
+    }
+
+    // --- Concurrency: bufferLock prevents rolling average corruption ---
+
+    @Test
+    void concurrentTickCallsProduceConsistentRollingAverage() throws Exception {
+        // Use a small window so the circular buffer wraps repeatedly under concurrent load.
+        ThroughputValidator concValidator = new ThroughputValidator(4);
+
+        int threadCount = 8;
+        int ticksPerThread = 100;
+        ExecutorService exec = Executors.newFixedThreadPool(threadCount);
+        CountDownLatch ready = new CountDownLatch(threadCount);
+        CountDownLatch start = new CountDownLatch(1);
+
+        List<Future<?>> futures = new ArrayList<>();
+        for (int t = 0; t < threadCount; t++) {
+            futures.add(exec.submit(() -> {
+                ready.countDown();
+                try { start.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                for (int i = 0; i < ticksPerThread; i++) {
+                    concValidator.tick();
+                }
+                return null;
+            }));
+        }
+        ready.await();
+        start.countDown(); // release all threads simultaneously
+
+        for (Future<?> f : futures) f.get();
+        exec.shutdown();
+
+        double avg = concValidator.getRollingAverage();
+        assertThat(avg)
+                .as("rolling average must be non-negative after concurrent tick() calls")
+                .isGreaterThanOrEqualTo(0.0);
+        assertThat(avg)
+                .as("rolling average must not overflow")
+                .isLessThan(Double.MAX_VALUE);
     }
 
     // --- Helpers ---

@@ -14,6 +14,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import java.util.List;
 import java.util.Map;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
@@ -200,7 +201,7 @@ class FeedControllerTest {
         Connection conn = new Connection("Binance", "wss://stream.binance.com:9443/ws",
                 Connection.AdapterType.BINANCE, List.of("BTCUSDT"));
         when(feedManager.getConnection("feed-1")).thenReturn(conn);
-        when(feedManager.startConnection("feed-1")).thenReturn(true);
+        when(feedManager.startConnection(eq("feed-1"), any())).thenReturn(true);
 
         mvc.perform(post("/api/feeds/feed-1/start"))
                 .andExpect(status().isOk());
@@ -210,7 +211,7 @@ class FeedControllerTest {
     void startFeedReturns400WhenAlreadyActive() throws Exception {
         Connection conn = new Connection();
         when(feedManager.getConnection("feed-1")).thenReturn(conn);
-        when(feedManager.startConnection("feed-1")).thenReturn(false);
+        when(feedManager.startConnection(eq("feed-1"), any())).thenReturn(false);
 
         mvc.perform(post("/api/feeds/feed-1/start"))
                 .andExpect(status().isBadRequest())
@@ -374,6 +375,28 @@ class FeedControllerTest {
     @Test
     void validateFeedUrlRejectsBlankUrl() {
         assert FeedController.validateFeedUrl("   ") != null;
+    }
+
+    @Test
+    void validateFeedUrlRejectsUnresolvableHostname() {
+        // .invalid TLD is guaranteed never to resolve (RFC 2606)
+        String result = FeedController.validateFeedUrl(
+                "wss://this-host-definitely-does-not-exist.invalid/ws");
+        assertThat(result).isNotNull();
+        assertThat(result).contains("hostname could not be resolved");
+    }
+
+    @Test
+    void addFeedRejectsUnresolvableHostname() throws Exception {
+        String body = objectMapper.writeValueAsString(
+                Map.of("name", "SSRF-DNS", "url", "wss://this-host-definitely-does-not-exist.invalid/ws",
+                        "adapterType", "GENERIC", "symbols", List.of("BTCUSDT")));
+
+        mvc.perform(post("/api/feeds")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error", containsString("hostname could not be resolved")));
     }
 
     // --- Additional SSRF edge cases ---

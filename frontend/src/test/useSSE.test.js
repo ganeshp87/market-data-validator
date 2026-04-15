@@ -293,6 +293,33 @@ describe('useSSE', () => {
     expect(latestSource().url).toBe('/api/stream/ticks?symbol=BTCUSDT');
   });
 
+  it('cleanup cancels pending reconnect timer so no abandoned EventSource is created', () => {
+    // Simulate a rapid URL change while a reconnect timer is pending.
+    // The cleanup must cancel the timer before the timer can fire and create a
+    // new EventSource for the old URL (which would then never be closed).
+    const { rerender, unmount } = renderHook(
+      ({ url }) => useSSE(url, 'tick'),
+      { initialProps: { url: '/api/stream/ticks' } }
+    );
+
+    // Trigger an error on the first connection — starts a reconnect timer
+    act(() => latestSource()._error());
+    const countAfterError = MockEventSource.instances.length; // still 1
+
+    // Change the URL (triggers cleanup of old hook effect, then new connect)
+    rerender({ url: '/api/stream/ticks?symbol=ETHUSDT' });
+
+    // Advance time well past the reconnect delay — the old timer must be cancelled
+    act(() => vi.advanceTimersByTime(30000));
+
+    // Only the new URL's EventSource should have been created — no extra one from the old timer
+    const urlsCreated = MockEventSource.instances.map((s) => s.url);
+    expect(urlsCreated.filter((u) => u === '/api/stream/ticks')).toHaveLength(countAfterError);
+    expect(latestSource().url).toBe('/api/stream/ticks?symbol=ETHUSDT');
+
+    unmount();
+  });
+
   // --- Edge cases ---
 
   it('handles empty event data without crashing', () => {

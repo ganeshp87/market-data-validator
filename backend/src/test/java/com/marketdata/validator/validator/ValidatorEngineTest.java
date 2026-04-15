@@ -200,9 +200,11 @@ class ValidatorEngineTest {
         engine.addListener(results -> callCount.incrementAndGet());
 
         engine.onTick(createTick("BTCUSDT", "45000.00", 1));
+        // Second tick within 250ms throttle window — may not fire again
         engine.onTick(createTick("BTCUSDT", "45100.00", 2));
 
-        assertThat(callCount.get()).isEqualTo(2);
+        // At least the first tick must trigger a notification (Fix 9 throttle)
+        assertThat(callCount.get()).isGreaterThanOrEqualTo(1);
     }
 
     @Test
@@ -359,12 +361,52 @@ class ValidatorEngineTest {
         assertThat(engine.getTickCount()).isEqualTo(1);
     }
 
+    // --- getResults(feedId) / getResultsByArea(feedId) — empty collection, never null ---
+
+    @Test
+    void getResultsByFeedIdReturnsEmptyListForUnknownFeed() {
+        List<ValidationResult> results = engine.getResults("unknown-feed-id");
+        assertThat(results).isNotNull();
+        assertThat(results).isEmpty();
+    }
+
+    @Test
+    void getResultsByAreaByFeedIdReturnsEmptyMapForUnknownFeed() {
+        Map<String, ValidationResult> results = engine.getResultsByArea("unknown-feed-id");
+        assertThat(results).isNotNull();
+        assertThat(results).isEmpty();
+    }
+
+    @Test
+    void getResultsByFeedIdReturnsFeedResultsAfterTicksReceived() {
+        engine.onTick(createTickForFeed("BTCUSDT", "45000.00", 1, "feed-x"));
+
+        List<ValidationResult> results = engine.getResults("feed-x");
+        assertThat(results).isNotEmpty();
+    }
+
+    @Test
+    void getResultsByAreaByFeedIdReturnsNonEmptyMapAfterTicksReceived() {
+        engine.onTick(createTickForFeed("BTCUSDT", "45000.00", 1, "feed-y"));
+
+        Map<String, ValidationResult> results = engine.getResultsByArea("feed-y");
+        assertThat(results).isNotEmpty();
+    }
+
     // --- Helpers ---
 
     private Tick createTick(String symbol, String price, long seqNum) {
         Instant exchangeTs = Instant.parse("2026-03-23T10:00:00Z").plusMillis(seqNum * 100);
         Tick tick = new Tick(symbol, new BigDecimal(price), new BigDecimal("1"),
                 seqNum, exchangeTs, "test-feed");
+        tick.setReceivedTimestamp(exchangeTs.plusMillis(50));
+        return tick;
+    }
+
+    private Tick createTickForFeed(String symbol, String price, long seqNum, String feedId) {
+        Instant exchangeTs = Instant.parse("2026-03-23T10:00:00Z").plusMillis(seqNum * 100);
+        Tick tick = new Tick(symbol, new BigDecimal(price), new BigDecimal("1"),
+                seqNum, exchangeTs, feedId);
         tick.setReceivedTimestamp(exchangeTs.plusMillis(50));
         return tick;
     }

@@ -2,6 +2,8 @@ package com.marketdata.validator.feed;
 
 import com.marketdata.validator.model.Connection;
 import com.marketdata.validator.model.Tick;
+import com.marketdata.validator.model.ValidationResult;
+import com.marketdata.validator.validator.ReconnectionValidator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -233,6 +235,44 @@ class FeedConnectionTest {
         assertThat(feedConnection.getReconnectAttempts()).isEqualTo(1);
     }
 
+    // --- Reconnection lifecycle callback tests ---
+
+    @Test
+    void disconnectCallbackFiredOnHandleDisconnect() {
+        ReconnectionValidator rv = new ReconnectionValidator();
+        feedConnection.setDisconnectCallback(() -> rv.onDisconnect(connection.getId()));
+
+        feedConnection.handleDisconnect();
+
+        // Disconnect recorded with no matching reconnect → WARN (pending reconnect)
+        assertThat(rv.getResult().getStatus()).isEqualTo(ValidationResult.Status.WARN);
+    }
+
+    @Test
+    void disconnectCallbackNotFiredForIntentionalDisconnect() {
+        ReconnectionValidator rv = new ReconnectionValidator();
+        feedConnection.setDisconnectCallback(() -> rv.onDisconnect(connection.getId()));
+
+        feedConnection.disconnect(); // intentional — should NOT fire callback
+        feedConnection.handleDisconnect(); // should be no-op
+
+        // No events fired → PASS (no connection events)
+        assertThat(rv.getResult().getStatus()).isEqualTo(ValidationResult.Status.PASS);
+    }
+
+    @Test
+    void disconnectCallbackFiredOnlyOnceWithCasGuard() {
+        ReconnectionValidator rv = new ReconnectionValidator();
+        feedConnection.setDisconnectCallback(() -> rv.onDisconnect(connection.getId()));
+
+        // Both calls simulate doOnError + doOnTerminate firing for the same event
+        feedConnection.handleDisconnect();
+        feedConnection.handleDisconnect();
+
+        // CAS guard ensures only one disconnect is recorded — still WARN (1 pending, not FAIL)
+        assertThat(rv.getResult().getStatus()).isEqualTo(ValidationResult.Status.WARN);
+    }
+
     // --- Clock offset estimation tests ---
 
     private Tick makeTick(Instant exchangeTs, Instant receivedTs) {
@@ -377,5 +417,52 @@ class FeedConnectionTest {
 
         // corrected = 535 - 515 = 20ms
         assertThat(received.get(0).getLatencyMs()).isEqualTo(20);
+    }
+
+    // --- Clock offset recalibration on reconnect ---
+
+    @Test
+    void clockOffsetResetToUncalibratedOnHandleDisconnect() {
+        when(mockAdapter.isHeartbeat(anyString())).thenReturn(false);
+
+        Instant exchangeTs = Instant.parse("2024-01-01T12:00:00Z");
+        Instant receivedTs = exchangeTs.minusMillis(2000);
+        when(mockAdapter.parseTick(anyString())).thenReturn(makeTick(exchangeTs, receivedTs));
+
+        // Calibrate the clock offset with OFFSET_SAMPLE_SIZE ticks
+        for (int i = 0; i < FeedConnection.OFFSET_SAMPLE_SIZE; i++) {
+            feedConnection.handleMessage("tick" + i);
+        }
+        assertThat(feedConnection.isOffsetCalibrated()).isTrue();
+
+        // Unexpected disconnect triggers recalibration — different exchange server
+        // on reconnect may have a different clock offset
+        feedConnection.handleDisconnect();
+
+        assertThat(feedConnection.isOffsetCalibrated())
+                .as("clock offset must be cleared on unexpected disconnect so it recalibrates after reconnect")
+                .isFalse();
+        assertThat(feedConnection.getClockOffsetMs()).isEqualTo(0);
+    }
+
+    @Test
+    void clockOffsetNotResetOnIntentionalDisconnect() {
+        when(mockAdapter.isHeartbeat(anyString())).thenReturn(false);
+
+        Instant exchangeTs = Instant.parse("2024-01-01T12:00:00Z");
+        Instant receivedTs = exchangeTs.minusMillis(2000);
+        when(mockAdapter.parseTick(anyString())).thenReturn(makeTick(exchangeTs, receivedTs));
+
+        for (int i = 0; i < FeedConnection.OFFSET_SAMPLE_SIZE; i++) {
+            feedConnection.handleMessage("tick" + i);
+        }
+        assertThat(feedConnection.isOffsetCalibrated()).isTrue();
+
+        // Intentional user-initiated disconnect — offset should NOT be cleared
+        feedConnection.disconnect();
+
+        assertThat(feedConnection.isOffsetCalibrated())
+                .as("clock offset must not be reset on intentional disconnect")
+                .isTrue();
     }
 }

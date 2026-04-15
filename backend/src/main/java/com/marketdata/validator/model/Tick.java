@@ -25,6 +25,8 @@ public class Tick {
     private Long sessionId;
     private String correlationId;
     private String traceId;
+    private String failureType; // Simulator-injected failure type (nullable)
+    private String source;      // Feed source, e.g. "LVWR_T"
 
     public Tick() {
     }
@@ -164,5 +166,31 @@ public class Tick {
 
     public void setTraceId(String traceId) {
         this.traceId = traceId;
+    }
+
+    public String getFailureType() {
+        return failureType;
+    }
+
+    public void setFailureType(String failureType) {
+        this.failureType = failureType;
+    }
+
+    public String getSource() {
+        return source;
+    }
+
+    public void setSource(String source) {
+        this.source = source;
+    }
+
+    /**
+     * Returns a composite key of feedId + symbol for per-feed validator state.
+     * Prevents the same symbol on two different feeds from colliding in dedup maps.
+     */
+    public String getFeedScopedSymbol() {
+        String feed = feedId != null ? feedId : "";
+        String sym = symbol != null ? symbol : "";
+        return feed + ":" + sym;
     }
 }

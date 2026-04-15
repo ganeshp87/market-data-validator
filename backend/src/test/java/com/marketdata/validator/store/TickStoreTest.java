@@ -166,6 +166,28 @@ class TickStoreTest {
         assertThat(tickStore.countBySessionId(0)).isEqualTo(0);
     }
 
+    // --- ORDER BY exchange_ts ASC for replay correctness ---
+
+    @Test
+    void findBySessionIdReturnsTicksInChronologicalOrder() {
+        // Insert ticks out of chronological order to verify ORDER BY is enforced
+        Tick tick3 = createTickAt("BTCUSDT", "45002", 3, Instant.parse("2026-01-01T00:00:03Z"));
+        Tick tick1 = createTickAt("BTCUSDT", "45000", 1, Instant.parse("2026-01-01T00:00:01Z"));
+        Tick tick2 = createTickAt("BTCUSDT", "45001", 2, Instant.parse("2026-01-01T00:00:02Z"));
+
+        // Insert deliberately out of order
+        tickStore.save(tick3);
+        tickStore.save(tick1);
+        tickStore.save(tick2);
+
+        List<Tick> found = tickStore.findBySessionId(100L);
+
+        assertThat(found).hasSize(3);
+        assertThat(found.get(0).getExchangeTimestamp()).isEqualTo(Instant.parse("2026-01-01T00:00:01Z"));
+        assertThat(found.get(1).getExchangeTimestamp()).isEqualTo(Instant.parse("2026-01-01T00:00:02Z"));
+        assertThat(found.get(2).getExchangeTimestamp()).isEqualTo(Instant.parse("2026-01-01T00:00:03Z"));
+    }
+
     // --- Timestamps preserved ---
 
     @Test

@@ -1,5 +1,6 @@
 package com.marketdata.validator.controller;
 
+import com.marketdata.validator.feed.FeedManager;
 import com.marketdata.validator.model.ValidationResult;
 import com.marketdata.validator.validator.ValidatorEngine;
 import org.springframework.http.ResponseEntity;
@@ -23,24 +24,44 @@ import java.util.Map;
 public class ValidationController {
 
     private final ValidatorEngine engine;
+    private final FeedManager feedManager;
 
-    public ValidationController(ValidatorEngine engine) {
+    public ValidationController(ValidatorEngine engine, FeedManager feedManager) {
         this.engine = engine;
+        this.feedManager = feedManager;
     }
 
     /**
      * Current validation state — all validators' latest results plus overall status.
+     * Optional query param ?feedId= scopes results to a single feed (Fix 8).
      */
     @GetMapping("/summary")
-    public Map<String, Object> getSummary() {
-        Map<String, ValidationResult> resultsByArea = engine.getResultsByArea();
+    public Map<String, Object> getSummary(
+            @RequestParam(required = false) String feedId) {
+
+        Map<String, ValidationResult> resultsByArea;
+        long ticks;
+
+        if (feedId != null && !feedId.isBlank()) {
+            resultsByArea = engine.getResultsByArea(feedId);
+            ticks = engine.getTickCount(feedId);
+            if (resultsByArea == null) {
+                resultsByArea = Map.of();
+            }
+        } else {
+            resultsByArea = engine.getResultsByArea();
+            ticks = engine.getTickCount();
+        }
+
         ValidationResult.Status overallStatus = computeOverallStatus(resultsByArea);
 
         return Map.of(
                 "results", resultsByArea,
                 "overallStatus", overallStatus,
                 "timestamp", Instant.now(),
-                "ticksProcessed", engine.getTickCount()
+                "ticksProcessed", ticks,
+                "rejectedCount", engine.getRejectedCount(),
+                "duplicateCount", engine.getDuplicateCount()
         );
     }
 
@@ -92,6 +113,17 @@ public class ValidationController {
                 "message", "All validators reset",
                 "timestamp", Instant.now()
         );
+    }
+
+    /**
+     * GET /api/validation/feeds — list configured feeds with id and name (Fix 8).
+     * Used by the frontend scope selector dropdown.
+     */
+    @GetMapping("/feeds")
+    public List<Map<String, String>> getFeeds() {
+        return feedManager.getAllConnections().stream()
+                .map(c -> Map.of("id", c.getId(), "name", c.getName()))
+                .toList();
     }
 
     /**

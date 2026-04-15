@@ -48,7 +48,7 @@ function makeValidationPayload(resultOverrides = {}) {
   const results = {};
   const areas = [
     'ACCURACY', 'LATENCY', 'COMPLETENESS', 'RECONNECTION',
-    'THROUGHPUT', 'ORDERING', 'SUBSCRIPTION', 'STATEFUL',
+    'THROUGHPUT', 'ORDERING', 'SUBSCRIPTION', 'STATEFUL', 'SOURCE',
   ];
   for (const area of areas) {
     results[area] = resultOverrides[area] || makeResult(area);
@@ -69,7 +69,7 @@ describe('ValidationDashboard', () => {
     expect(screen.getByText('Validation Dashboard')).toBeInTheDocument();
   });
 
-  it('renders all 8 validation area cards', () => {
+  it('renders all 9 validation area cards', () => {
     mockUseSSE.mockReturnValue(
       defaultSSE({ latest: makeValidationPayload() })
     );
@@ -86,10 +86,10 @@ describe('ValidationDashboard', () => {
     expect(screen.getByText('Stateful')).toBeInTheDocument();
   });
 
-  it('shows 8 cards even with no data', () => {
+  it('shows 9 cards even with no data', () => {
     render(<ValidationDashboard />);
 
-    // All 8 area names should be present regardless of data
+    // All 9 area names should be present regardless of data
     expect(screen.getByText('Accuracy')).toBeInTheDocument();
     expect(screen.getByText('Stateful')).toBeInTheDocument();
   });
@@ -102,7 +102,7 @@ describe('ValidationDashboard', () => {
     const { container } = render(<ValidationDashboard />);
 
     const passCards = container.querySelectorAll('.vd-card.status-pass');
-    expect(passCards.length).toBe(8);
+    expect(passCards.length).toBe(9);
   });
 
   it('shows WARN status for failing areas', () => {
@@ -266,7 +266,7 @@ describe('ValidationDashboard', () => {
 
     // With no data, all cards should show the default message
     const waitingMessages = screen.getAllByText('Waiting for data…');
-    expect(waitingMessages.length).toBe(8);
+    expect(waitingMessages.length).toBe(9);
   });
 
   it('renders PASS icons on cards', () => {
@@ -276,9 +276,9 @@ describe('ValidationDashboard', () => {
 
     const { container } = render(<ValidationDashboard />);
 
-    // All 8 cards should have the pass class
+    // All 9 cards should have the pass class
     const passCards = container.querySelectorAll('.vd-card.status-pass');
-    expect(passCards.length).toBe(8);
+    expect(passCards.length).toBe(9);
   });
 
   // --- Edge cases ---
@@ -299,7 +299,7 @@ describe('ValidationDashboard', () => {
     const passCards = container.querySelectorAll('.vd-card.status-pass');
     expect(failCards.length).toBe(2);
     expect(warnCards.length).toBe(1);
-    expect(passCards.length).toBe(5);
+    expect(passCards.length).toBe(6);
   });
 
   it('overall status reflects worst case among all areas', () => {
@@ -315,7 +315,34 @@ describe('ValidationDashboard', () => {
     expect(overallEl).not.toBeNull();
   });
 
-  it('all 8 validator area names displayed correctly', () => {
+  it('formats completeness metric as percentage not raw float', () => {
+    const payload = makeValidationPayload({
+      COMPLETENESS: makeResult('COMPLETENESS', 'FAIL', {
+        metric: 6.200726833629408,
+        threshold: 99.99,
+        details: {},
+      }),
+    });
+    mockUseSSE.mockReturnValue(defaultSSE({ latest: payload }));
+    render(<ValidationDashboard />);
+    expect(screen.getByText('Value: 6.20%')).toBeInTheDocument();
+    expect(screen.getByText('Threshold: 99.99%')).toBeInTheDocument();
+  });
+
+  it('completeness card shows gap events and missing seqNums from details', () => {
+    const payload = makeValidationPayload({
+      COMPLETENESS: makeResult('COMPLETENESS', 'FAIL', {
+        metric: 16.3,
+        details: { gapEventCount: 8, missingSequenceCount: 128 },
+      }),
+    });
+    mockUseSSE.mockReturnValue(defaultSSE({ latest: payload }));
+    render(<ValidationDashboard />);
+    expect(screen.getByText('Gap events: 8')).toBeInTheDocument();
+    expect(screen.getByText('Missing seqNums: 128')).toBeInTheDocument();
+  });
+
+  it('all 9 validator area names displayed correctly', () => {
     mockUseSSE.mockReturnValue(
       defaultSSE({ latest: makeValidationPayload() })
     );
@@ -324,7 +351,7 @@ describe('ValidationDashboard', () => {
 
     const areaNames = [
       'Accuracy', 'Latency', 'Completeness', 'Reconnection',
-      'Throughput', 'Ordering', 'Subscription', 'Stateful',
+      'Throughput', 'Ordering', 'Subscription', 'Stateful', 'Source',
     ];
     for (const name of areaNames) {
       expect(screen.getByText(name)).toBeInTheDocument();

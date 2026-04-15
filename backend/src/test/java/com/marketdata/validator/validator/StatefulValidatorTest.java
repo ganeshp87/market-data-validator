@@ -6,6 +6,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 
@@ -263,10 +264,9 @@ class StatefulValidatorTest {
         }
         feedTick("BTCUSDT", "0", "1.0", 1000); // 1 violation
 
-        // 999/1000 = 99.9% — below PASS (99.99%) but at WARN (99.9%)
+        // 999/1000 = 99.9% — below PASS (99.99%) but not below WARN (99.9%) → WARN
         ValidationResult result = validator.getResult();
-        // Could be WARN or PASS depending on exact threshold comparison
-        assertThat(result.getStatus()).isIn(ValidationResult.Status.WARN, ValidationResult.Status.PASS);
+        assertThat(result.getStatus()).isEqualTo(ValidationResult.Status.WARN);
     }
 
     // --- Stale Symbol Detection ---
@@ -280,39 +280,45 @@ class StatefulValidatorTest {
     }
 
     @Test
-    void staleSymbolDetectedWithShortThreshold() throws InterruptedException {
+    void staleSymbolDetectedWithShortThreshold() {
+        ManualClock clock = new ManualClock(Instant.parse("2026-01-01T00:00:00Z"));
+        validator.setClock(clock);
         validator.configure(Map.of("staleThresholdMs", 50L));
 
         feedTick("BTCUSDT", "100.00", "1.0", 1);
 
-        Thread.sleep(80); // Wait past stale threshold
+        clock.advance(Duration.ofMillis(80)); // Advance past stale threshold
 
         ValidationResult result = validator.getResult();
         assertThat((int) result.getDetails().get("staleSymbolCount")).isEqualTo(1);
     }
 
     @Test
-    void staleSymbolClearedByNewTick() throws InterruptedException {
+    void staleSymbolClearedByNewTick() {
+        ManualClock clock = new ManualClock(Instant.parse("2026-01-01T00:00:00Z"));
+        validator.setClock(clock);
         validator.configure(Map.of("staleThresholdMs", 50L));
 
         feedTick("BTCUSDT", "100.00", "1.0", 1);
-        Thread.sleep(80); // Goes stale
+        clock.advance(Duration.ofMillis(80)); // Goes stale
 
-        feedTick("BTCUSDT", "101.00", "1.0", 2); // Fresh tick
+        feedTick("BTCUSDT", "101.00", "1.0", 2); // Fresh tick updates lastTickTime
 
         ValidationResult result = validator.getResult();
         assertThat((int) result.getDetails().get("staleSymbolCount")).isEqualTo(0);
     }
 
     @Test
-    void manyStaleSymbolsProduceFail() throws InterruptedException {
+    void manyStaleSymbolsProduceFail() {
+        ManualClock clock = new ManualClock(Instant.parse("2026-01-01T00:00:00Z"));
+        validator.setClock(clock);
         validator.configure(Map.of("staleThresholdMs", 50L));
 
         feedTick("BTCUSDT", "100.00", "1.0", 1);
         feedTick("ETHUSDT", "50.00", "1.0", 1);
         feedTick("ADAUSDT", "1.00", "1.0", 1);
 
-        Thread.sleep(80); // All 3 go stale
+        clock.advance(Duration.ofMillis(80)); // All 3 go stale
 
         ValidationResult result = validator.getResult();
         assertThat(result.getStatus()).isEqualTo(ValidationResult.Status.FAIL);

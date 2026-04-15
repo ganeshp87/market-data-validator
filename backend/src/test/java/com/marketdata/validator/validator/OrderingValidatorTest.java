@@ -194,6 +194,7 @@ class OrderingValidatorTest {
 
         assertThat(validator.getTotalTicks()).isEqualTo(0);
         assertThat(validator.getOutOfOrderCount()).isEqualTo(0);
+        assertThat(validator.getDuplicateCount()).isEqualTo(0);
         assertThat(validator.getResult().getStatus()).isEqualTo(ValidationResult.Status.PASS);
     }
 
@@ -225,9 +226,47 @@ class OrderingValidatorTest {
         ValidationResult result = validator.getResult();
         assertThat(result.getDetails()).containsKey("totalTicks");
         assertThat(result.getDetails()).containsKey("outOfOrderCount");
+        assertThat(result.getDetails()).containsKey("duplicateCount");
         assertThat(result.getDetails()).containsKey("bidAskViolations");
         assertThat(result.getDetails()).containsKey("volumeViolations");
         assertThat(result.getDetails()).containsKey("orderingRate");
+    }
+
+    // --- Duplicate counting ---
+
+    @Test
+    void duplicateTickIncrementsDuplicateCount() {
+        Instant base = Instant.parse("2026-03-23T10:00:00Z");
+
+        feedTick("BTCUSDT", base, 1);
+        feedTick("BTCUSDT", base.plusMillis(100), 2);
+        feedTick("BTCUSDT", base.plusMillis(200), 2); // exact duplicate seqNum
+
+        assertThat(validator.getDuplicateCount()).isEqualTo(1);
+        assertThat(validator.getTotalTicks()).isEqualTo(2); // duplicate not counted as processed
+    }
+
+    @Test
+    void outOfOrderSeqNumDoesNotIncrementDuplicateCount() {
+        Instant base = Instant.parse("2026-03-23T10:00:00Z");
+
+        feedTick("BTCUSDT", base, 5);
+        feedTick("BTCUSDT", base.plusMillis(100), 3); // older seqNum, not exact duplicate
+
+        assertThat(validator.getDuplicateCount()).isEqualTo(0);
+        assertThat(validator.getOutOfOrderCount()).isEqualTo(1);
+        assertThat(validator.getTotalTicks()).isEqualTo(1);
+    }
+
+    @Test
+    void duplicateCountExposedInDetails() {
+        Instant base = Instant.parse("2026-03-23T10:00:00Z");
+
+        feedTick("BTCUSDT", base, 1);
+        feedTick("BTCUSDT", base.plusMillis(100), 1); // duplicate
+
+        ValidationResult result = validator.getResult();
+        assertThat(result.getDetails().get("duplicateCount")).isEqualTo(1L);
     }
 
     // --- Helpers ---

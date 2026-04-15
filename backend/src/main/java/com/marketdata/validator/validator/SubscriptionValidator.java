@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
@@ -69,6 +70,9 @@ public class SubscriptionValidator implements Validator {
     private long unsubscribeGraceMs = DEFAULT_UNSUBSCRIBE_GRACE_MS;
     private long activeThresholdMs = DEFAULT_ACTIVE_THRESHOLD_MS;
 
+    // Clock for time-dependent operations (injectable for testing)
+    private Clock clock = Clock.systemUTC();
+
     @Override
     public String getArea() {
         return Area.SUBSCRIPTION.name();
@@ -91,7 +95,7 @@ public class SubscriptionValidator implements Validator {
         totalTicks.incrementAndGet();
         lastSequenceBySymbol.put(symbol, tick.getSequenceNum());
 
-        Instant now = Instant.now();
+        Instant now = clock.instant();
         lastTickTimeBySymbol.put(symbol, now);
         activeSymbols.add(symbol);
 
@@ -124,7 +128,7 @@ public class SubscriptionValidator implements Validator {
      */
     public void onSubscribe(String symbol) {
         subscribedSymbols.add(symbol);
-        subscribeTimeBySymbol.put(symbol, Instant.now());
+        subscribeTimeBySymbol.put(symbol, clock.instant());
         // Clear any previous unsubscribe state for this symbol
         unsubscribeTimeBySymbol.remove(symbol);
         leakyUnsubscribes.remove(symbol);
@@ -137,7 +141,7 @@ public class SubscriptionValidator implements Validator {
      */
     public void onUnsubscribe(String symbol) {
         subscribedSymbols.remove(symbol);
-        unsubscribeTimeBySymbol.put(symbol, Instant.now());
+        unsubscribeTimeBySymbol.put(symbol, clock.instant());
         unsubscribeEvents.incrementAndGet();
         log.debug("Unsubscribe recorded for {}", symbol);
     }
@@ -146,7 +150,7 @@ public class SubscriptionValidator implements Validator {
     public ValidationResult getResult() {
         int subscribed = subscribedSymbols.size();
         int active = 0;
-        Instant now = Instant.now();
+        Instant now = clock.instant();
 
         // Count currently active symbols (within threshold)
         for (String symbol : subscribedSymbols) {
@@ -246,4 +250,5 @@ public class SubscriptionValidator implements Validator {
     long getTotalTicks() { return totalTicks.get(); }
     long getSubscribeEventCount() { return subscribeEvents.get(); }
     long getUnsubscribeEventCount() { return unsubscribeEvents.get(); }
+    void setClock(Clock clock) { this.clock = clock; }
 }
