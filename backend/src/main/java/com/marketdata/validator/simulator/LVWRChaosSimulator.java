@@ -232,7 +232,7 @@ public class LVWRChaosSimulator implements Runnable {
         BigDecimal volume = randomVolume();
         long syntheticLatencyMs = 2 + (long) (Math.random() * 18); // 2–19 ms
 
-        String symbol = String.valueOf(instrId);
+        String symbol = state.getSymbol();
 
         if (failure == null) {
             long seq = state.nextSeqNum();
@@ -300,7 +300,7 @@ public class LVWRChaosSimulator implements Runnable {
             case SYMBOL_MISMATCH -> {
                 // Aggregate instrument 126 with wrong source instrument ID
                 long seq = state.nextSeqNum();
-                yield adapter.buildTick(feedId, "126", price, volume, seq, syntheticLatencyMs, failure);
+                yield adapter.buildTick(feedId, instruments.get(126).getSymbol(), price, volume, seq, syntheticLatencyMs, failure);
             }
             case CUMVOL_BACKWARD -> {
                 state.decreaseCumVol(200);
@@ -350,7 +350,7 @@ public class LVWRChaosSimulator implements Runnable {
             int eid = EMISSION_ORDER[(i % (EMISSION_ORDER.length - 1)) + 1];
             InstrumentState instrState = instruments.get(eid);
             long seq = instrState.nextSeqNum();
-            Tick t = adapter.buildTick(feedId, String.valueOf(eid), price, volume, seq, 2, FailureType.THROTTLE_BURST);
+            Tick t = adapter.buildTick(feedId, instrState.getSymbol(), price, volume, seq, 2, FailureType.THROTTLE_BURST);
             t.setReceivedTimestamp(burstTime); // same timestamp for all burst ticks
             t.setExchangeTimestamp(burstTime.minusMillis(2));
             tickConsumer.accept(t);
@@ -365,7 +365,7 @@ public class LVWRChaosSimulator implements Runnable {
             if (state == null) continue;
             BigDecimal price = state.getLastPrice();
             // Heartbeats use seqNum=0 (pre-open; real ticks start at seqNum=1 via nextSeqNum())
-            Tick hbTick = adapter.buildTick(feedId, String.valueOf(instrId), price,
+            Tick hbTick = adapter.buildTick(feedId, state.getSymbol(), price,
                     BigDecimal.ZERO, 0L, 5L, null);
             tickConsumer.accept(hbTick);
             ticksSent.incrementAndGet();

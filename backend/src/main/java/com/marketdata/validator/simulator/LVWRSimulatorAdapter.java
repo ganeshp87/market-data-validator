@@ -61,7 +61,7 @@ public class LVWRSimulatorAdapter implements FeedAdapter {
      *   exchange = received - syntheticLatencyMs  (always BEFORE received)
      *
      * @param feedId         connection ID of the LVWR_T feed
-     * @param symbol         instrument symbol (e.g. "1", "126")
+     * @param symbol         instrument symbol (e.g. "EUR/USD", "AGGR_INDEX")
      * @param price          trade price (BigDecimal, always > 0)
      * @param volume         trade quantity
      * @param seqNum         sequence number

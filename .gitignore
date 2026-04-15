@@ -26,6 +26,10 @@ Thumbs.db
 *.swp
 *.orig
 
+# Prompt/scratch files
+Implement a Violations Log feature for the market-
+UI promt test
+
 # Interview/personal prep (keep locally, exclude from public repo)
 docs/*Interview*
 docs/*Prep*
