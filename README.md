@@ -1,5 +1,11 @@
 # Market Data Stream Validator
 
+[![CI](https://github.com/ganeshp87/market-data-validator/actions/workflows/ci.yml/badge.svg)](https://github.com/ganeshp87/market-data-validator/actions/workflows/ci.yml)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=ganeshp87_market-data-validator&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=ganeshp87_market-data-validator)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=ganeshp87_market-data-validator&metric=coverage)](https://sonarcloud.io/summary/new_code?id=ganeshp87_market-data-validator)
+[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=ganeshp87_market-data-validator&metric=bugs)](https://sonarcloud.io/summary/new_code?id=ganeshp87_market-data-validator)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=ganeshp87_market-data-validator&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=ganeshp87_market-data-validator)
+
 A production-grade real-time market data quality validation system built with **Java 21 LTS**, **Spring Boot 3.3.0**, **React 18**, and **SQLite**. Connects to live WebSocket feeds (Binance, Finnhub, or custom sources), validates streaming data across **8 testing areas**, and presents results through a live dashboard.
 
 ## What It Does
