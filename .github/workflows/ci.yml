@@ -79,6 +79,10 @@ jobs:
           name: jacoco-report
           path: backend/target/site/jacoco/
 
+      - name: Compile backend (needed for SonarCloud analysis)
+        working-directory: backend
+        run: ./mvnw compile -DskipTests
+
       - name: SonarCloud scan
         working-directory: backend
         env:
