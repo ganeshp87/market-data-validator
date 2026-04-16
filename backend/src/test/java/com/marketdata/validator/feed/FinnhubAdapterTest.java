@@ -162,4 +162,46 @@ class FinnhubAdapterTest {
         assertThat(tick).isNotNull();
         assertThat(tick.getReceivedTimestamp()).isNotNull();
     }
+
+    // --- parseTradeNode missing fields ---
+
+    @Test
+    void parseTradeNodeMissingSymbolReturnsNull() {
+        String msg = """
+                {"type":"trade","data":[{"p":"178.50","v":"100","t":1711000000000}]}""";
+        assertThat(adapter.parseTick(msg)).isNull();
+    }
+
+    @Test
+    void parseTradeNodeMissingPriceReturnsNull() {
+        String msg = """
+                {"type":"trade","data":[{"s":"AAPL","v":"100","t":1711000000000}]}""";
+        assertThat(adapter.parseTick(msg)).isNull();
+    }
+
+    @Test
+    void parseTradeNodeMissingVolumeReturnsNull() {
+        String msg = """
+                {"type":"trade","data":[{"s":"AAPL","p":"178.50","t":1711000000000}]}""";
+        assertThat(adapter.parseTick(msg)).isNull();
+    }
+
+    @Test
+    void parseTradeNodeMissingTimestampReturnsNull() {
+        String msg = """
+                {"type":"trade","data":[{"s":"AAPL","p":"178.50","v":"100"}]}""";
+        assertThat(adapter.parseTick(msg)).isNull();
+    }
+
+    @Test
+    void parseTicksWithMixedValidAndInvalidNodes() {
+        String msg = """
+                {"type":"trade","data":[
+                  {"s":"AAPL","p":"178.50","v":"100","t":1711000000000},
+                  {"p":"178.50","v":"100","t":1711000000001}
+                ]}""";
+        List<Tick> ticks = adapter.parseTicks(msg);
+        assertThat(ticks).hasSize(1);
+        assertThat(ticks.get(0).getSymbol()).isEqualTo("AAPL");
+    }
 }

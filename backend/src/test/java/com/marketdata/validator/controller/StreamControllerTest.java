@@ -12,6 +12,7 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
@@ -174,5 +175,59 @@ class StreamControllerTest {
     void unknownStreamPathReturns404() throws Exception {
         mvc.perform(get("/api/stream/nonexistent"))
                 .andExpect(status().isNotFound());
+    }
+
+    // --- formatTick null safety ---
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void formatTickHandlesAllNullFields() throws Exception {
+        StreamController controller = mvc.getDispatcherServlet()
+                .getWebApplicationContext()
+                .getBean(StreamController.class);
+
+        Tick tick = new Tick();
+        tick.setSequenceNum(1);
+        // All other fields are null
+
+        Method formatTick = StreamController.class.getDeclaredMethod("formatTick", Tick.class);
+        formatTick.setAccessible(true);
+        Map<String, Object> result = (Map<String, Object>) formatTick.invoke(controller, tick);
+
+        assertThat(result.get("symbol")).isEqualTo("");
+        assertThat(result.get("price")).isEqualTo("0");
+        assertThat(result.get("bid")).isEqualTo("");
+        assertThat(result.get("ask")).isEqualTo("");
+        assertThat(result.get("volume")).isEqualTo("");
+        assertThat(result.get("exchangeTimestamp")).isEqualTo("");
+        assertThat(result.get("receivedTimestamp")).isEqualTo("");
+        assertThat(result.get("feedId")).isEqualTo("");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void formatTickHandlesPopulatedFields() throws Exception {
+        StreamController controller = mvc.getDispatcherServlet()
+                .getWebApplicationContext()
+                .getBean(StreamController.class);
+
+        Tick tick = new Tick();
+        tick.setSymbol("BTCUSDT");
+        tick.setPrice(new BigDecimal("50000.00"));
+        tick.setBid(new BigDecimal("49999.50"));
+        tick.setAsk(new BigDecimal("50000.50"));
+        tick.setVolume(new BigDecimal("1.5"));
+        tick.setSequenceNum(42);
+        tick.setExchangeTimestamp(Instant.parse("2026-01-01T00:00:00Z"));
+        tick.setReceivedTimestamp(Instant.parse("2026-01-01T00:00:01Z"));
+        tick.setFeedId("binance-1");
+
+        Method formatTick = StreamController.class.getDeclaredMethod("formatTick", Tick.class);
+        formatTick.setAccessible(true);
+        Map<String, Object> result = (Map<String, Object>) formatTick.invoke(controller, tick);
+
+        assertThat(result.get("symbol")).isEqualTo("BTCUSDT");
+        assertThat(result.get("price")).isEqualTo("50000.00");
+        assertThat(result.get("feedId")).isEqualTo("binance-1");
     }
 }
