@@ -8,6 +8,7 @@ import com.marketdata.validator.model.ValidationResult.Area;
 import com.marketdata.validator.model.ValidationResult.Status;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -53,6 +54,7 @@ public class SourceValidator implements Validator {
     private double passThreshold = DEFAULT_PASS_THRESHOLD;
     private double warnThreshold = DEFAULT_WARN_THRESHOLD;
 
+    @Autowired
     public SourceValidator(FeedManager feedManager) {
         this.feedManager = feedManager;
     }

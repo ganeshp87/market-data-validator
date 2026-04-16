@@ -15,6 +15,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 /**
@@ -52,13 +53,13 @@ public class LVWRChaosSimulator implements Runnable {
     private final ScenarioEngine scenarioEngine;
     private final Consumer<Tick> tickConsumer;
 
-    private volatile ScenarioConfig config;
+    private final AtomicReference<ScenarioConfig> config = new AtomicReference<>();
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicLong ticksSent = new AtomicLong(0);
     /** Counted down to zero in the run() finally block — used by waitForStop(). */
     private final CountDownLatch stoppedLatch = new CountDownLatch(1);
     /** Reference to the virtual thread running this simulator — set at start of run(). */
-    private volatile Thread runnerThread;
+    private final AtomicReference<Thread> runnerThread = new AtomicReference<>();
     /** Per-type failure injection counts — keyed by FailureType name */
     private final Map<String, AtomicLong> failureCountsByType = new ConcurrentHashMap<>();
 
@@ -73,7 +74,7 @@ public class LVWRChaosSimulator implements Runnable {
     /** Package-private constructor for testing — allows injecting a deterministic ScenarioEngine. */
     LVWRChaosSimulator(String feedId, ScenarioConfig config, Consumer<Tick> tickConsumer, ScenarioEngine scenarioEngine) {
         this.feedId = feedId;
-        this.config = config;
+        this.config.set(config);
         this.adapter = new LVWRSimulatorAdapter();
         this.scenarioEngine = scenarioEngine;
         this.tickConsumer = tickConsumer;
@@ -86,21 +87,21 @@ public class LVWRChaosSimulator implements Runnable {
 
     @Override
     public void run() {
-        runnerThread = Thread.currentThread();
+        runnerThread.set(Thread.currentThread());
         running.set(true);
         scenarioEngine.reset();
 
         log.info("LVWR_T simulator starting {} {} {}",
                 StructuredArguments.keyValue("feedId", feedId),
-                StructuredArguments.keyValue("mode", config.getMode()),
-                StructuredArguments.keyValue("ticksPerSecond", config.getTicksPerSecond()));
+                StructuredArguments.keyValue("mode", config.get().getMode()),
+                StructuredArguments.keyValue("ticksPerSecond", config.get().getTicksPerSecond()));
 
         // Phase 1: Emit pre-open reference rows for each instrument
         emitPhase1HeartbeatsIfEnabled();
 
         long tradeCount = 0;
-        int numTrades = config.getNumTrades(); // 0 = unlimited
-        long intervalNanos = 1_000_000_000L / config.getTicksPerSecond();
+        int numTrades = config.get().getNumTrades(); // 0 = unlimited
+        long intervalNanos = 1_000_000_000L / config.get().getTicksPerSecond();
         long nextDeadlineNs = System.nanoTime();
 
         try {
@@ -114,7 +115,7 @@ public class LVWRChaosSimulator implements Runnable {
                 InstrumentState state = instruments.get(instrId);
 
                 // Decide whether to inject a failure
-                FailureType failure = scenarioEngine.decide(config);
+                FailureType failure = scenarioEngine.decide(config.get());
 
                 // Generate the tick (or handle special failure modes)
                 if (failure == FailureType.DISCONNECT) {
@@ -163,7 +164,7 @@ public class LVWRChaosSimulator implements Runnable {
 
     public void stop() {
         running.set(false);
-        Thread t = runnerThread;
+        Thread t = runnerThread.get();
         if (t != null) t.interrupt(); // wake from any blocking sleep (e.g. DISCONNECT 8s)
     }
 
@@ -201,23 +202,25 @@ public class LVWRChaosSimulator implements Runnable {
     }
 
     public void updateConfig(ScenarioConfig newConfig) {
-        ScenarioConfig old = this.config;
+        ScenarioConfig old = this.config.get();
         boolean modeChanged = newConfig.getMode() != old.getMode();
         boolean scenarioTargetChanged = newConfig.getMode() == SimulatorMode.SCENARIO
                 && newConfig.getTargetScenario() != old.getTargetScenario();
 
-        this.config = newConfig;
-
         // Reset per-type counters when the mode changes or when the SCENARIO target
         // switches — the caller selected a specific fault for isolated testing and old
         // counts from a prior mode run must not pollute the FAILURES INJECTED panel.
+        // Reset BEFORE swapping the config so the run loop cannot increment a counter
+        // using the new config before the reset takes effect.
         if (modeChanged || scenarioTargetChanged) {
             failureCountsByType.values().forEach(c -> c.set(0));
         }
+
+        this.config.set(newConfig);
     }
 
     public ScenarioConfig getConfig() {
-        return config;
+        return config.get();
     }
 
     // --- Internal tick construction ---
@@ -322,7 +325,7 @@ public class LVWRChaosSimulator implements Runnable {
         log.info("LVWR_T injecting DISCONNECT {}",
                 StructuredArguments.keyValue("feedId", feedId));
         // Pause emission for configured duration — ThroughputValidator will detect the drop
-        Thread.sleep(config.getDisconnectDurationMs());
+        Thread.sleep(config.get().getDisconnectDurationMs());
     }
 
     private void handleReconnectStorm() throws InterruptedException {
@@ -337,7 +340,7 @@ public class LVWRChaosSimulator implements Runnable {
                 StructuredArguments.keyValue("feedId", feedId),
                 StructuredArguments.keyValue("disconnectCount", disconnectCount));
 
-        Thread.sleep(config.getReconnectPauseDurationMs()); // brief pause per reconnect event
+        Thread.sleep(config.get().getReconnectPauseDurationMs()); // brief pause per reconnect event
     }
 
     private void handleThrottleBurst(InstrumentState state) {
@@ -359,7 +362,7 @@ public class LVWRChaosSimulator implements Runnable {
     }
 
     private void emitPhase1HeartbeatsIfEnabled() {
-        if (!config.isIncludeHeartbeats()) return;
+        if (!config.get().isIncludeHeartbeats()) return;
         for (int instrId : EMISSION_ORDER) {
             InstrumentState state = instruments.get(instrId);
             if (state == null) continue;
@@ -436,7 +439,7 @@ public class LVWRChaosSimulator implements Runnable {
         /** GBM price walk with zero drift, per-instrument volatility, bounded to > 0. */
         BigDecimal nextPrice() {
             double z = rng.nextGaussian();
-            BigDecimal move = volatility.multiply(new BigDecimal(z), MC);
+            BigDecimal move = volatility.multiply(BigDecimal.valueOf(z), MC);
             BigDecimal newPrice = lastPrice.add(lastPrice.multiply(move, MC));
             // Clamp to > 0
             if (newPrice.compareTo(BigDecimal.ZERO) <= 0) {

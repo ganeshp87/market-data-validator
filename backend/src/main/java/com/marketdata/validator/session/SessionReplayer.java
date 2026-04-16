@@ -14,6 +14,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 /**
@@ -40,7 +41,7 @@ public class SessionReplayer {
 
     private Thread replayThread;
     private final Object pauseLock = new Object();
-    private volatile Consumer<ReplayProgress> progressListener;
+    private final AtomicReference<Consumer<ReplayProgress>> progressListener = new AtomicReference<>();
 
     public SessionReplayer(TickStore tickStore, SessionStore sessionStore, ValidatorEngine engine) {
         this.tickStore = tickStore;
@@ -221,11 +222,11 @@ public class SessionReplayer {
     public List<ValidationResult> getResults() { return engine.getResults(); }
 
     public void setProgressListener(Consumer<ReplayProgress> listener) {
-        this.progressListener = listener;
+        this.progressListener.set(listener);
     }
 
     private void notifyProgress() {
-        Consumer<ReplayProgress> listener = this.progressListener;
+        Consumer<ReplayProgress> listener = this.progressListener.get();
         if (listener != null) {
             listener.accept(new ReplayProgress(state, ticksReplayed.get(), totalTicks, speedFactor));
         }

@@ -111,7 +111,10 @@ public class BackpressureQueue {
             synchronized (dropLock) {
                 if (!queue.offer(tick)) {
                     queue.poll(); // Evict oldest
-                    queue.offer(tick); // Add new (guaranteed to succeed with lock held)
+                    boolean added = queue.offer(tick);
+                    if (!added) {
+                        log.warn("Queue offer failed after eviction — tick lost");
+                    }
                     droppedCount.incrementAndGet();
                     log.trace("Queue full — dropped oldest tick, added {} {}",
                             StructuredArguments.keyValue("seq", tick.getSequenceNum()),
