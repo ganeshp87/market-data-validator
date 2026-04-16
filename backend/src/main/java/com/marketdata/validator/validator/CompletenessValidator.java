@@ -161,10 +161,10 @@ public class CompletenessValidator implements Validator {
     @Override
     public void configure(Map<String, Object> config) {
         if (config.containsKey("heartbeatThresholdMs")) {
-            heartbeatThresholdMs = ((Number) config.get("heartbeatThresholdMs")).longValue();
+            heartbeatThresholdMs = ConfigUtils.toLong(config.get("heartbeatThresholdMs"), heartbeatThresholdMs);
         }
         if (config.containsKey("staleRecoveryWindowMs")) {
-            staleRecoveryWindowMs = ((Number) config.get("staleRecoveryWindowMs")).longValue();
+            staleRecoveryWindowMs = ConfigUtils.toLong(config.get("staleRecoveryWindowMs"), staleRecoveryWindowMs);
         }
     }
 

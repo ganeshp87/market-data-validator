@@ -231,13 +231,13 @@ public class SubscriptionValidator implements Validator {
     @Override
     public void configure(Map<String, Object> config) {
         if (config.containsKey("subscribeTimeoutMs")) {
-            subscribeTimeoutMs = ((Number) config.get("subscribeTimeoutMs")).longValue();
+            subscribeTimeoutMs = ConfigUtils.toLong(config.get("subscribeTimeoutMs"), subscribeTimeoutMs);
         }
         if (config.containsKey("unsubscribeGraceMs")) {
-            unsubscribeGraceMs = ((Number) config.get("unsubscribeGraceMs")).longValue();
+            unsubscribeGraceMs = ConfigUtils.toLong(config.get("unsubscribeGraceMs"), unsubscribeGraceMs);
         }
         if (config.containsKey("activeThresholdMs")) {
-            activeThresholdMs = ((Number) config.get("activeThresholdMs")).longValue();
+            activeThresholdMs = ConfigUtils.toLong(config.get("activeThresholdMs"), activeThresholdMs);
         }
     }
 

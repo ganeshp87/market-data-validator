@@ -127,8 +127,8 @@ public class LatencyValidator implements Validator {
             p50 = calculatePercentile(50);
             p95 = calculatePercentile(95);
             p99 = calculatePercentile(99);
-            min = minLatency;
-            max = maxLatency;
+            min = (minLatency == Long.MAX_VALUE) ? 0 : minLatency;
+            max = (maxLatency == Long.MIN_VALUE) ? 0 : maxLatency;
             currentCount = count;
         } finally {
             bufferLock.unlock();
@@ -183,10 +183,10 @@ public class LatencyValidator implements Validator {
     @Override
     public void configure(Map<String, Object> config) {
         if (config.containsKey("thresholdMs")) {
-            thresholdMs = ((Number) config.get("thresholdMs")).longValue();
+            thresholdMs = ConfigUtils.toLong(config.get("thresholdMs"), thresholdMs);
         }
         if (config.containsKey("bufferSize")) {
-            bufferSize = ((Number) config.get("bufferSize")).intValue();
+            bufferSize = ConfigUtils.toInt(config.get("bufferSize"), bufferSize);
             bufferLock.lock();
             try {
                 buffer = new long[bufferSize];

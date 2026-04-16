@@ -218,10 +218,15 @@ public class ThroughputValidator implements Validator {
         dropDetected = false;
         consecutiveZeroSeconds = 0;
         zeroThroughputFail = false;
-        head = 0;
-        filled = 0;
-        for (int i = 0; i < windowSize; i++) {
-            secondCounts[i] = 0;
+        bufferLock.lock();
+        try {
+            head = 0;
+            filled = 0;
+            for (int i = 0; i < windowSize; i++) {
+                secondCounts[i] = 0;
+            }
+        } finally {
+            bufferLock.unlock();
         }
         lastSequenceBySymbol.clear();
         totalTicks.set(0);
@@ -230,10 +235,10 @@ public class ThroughputValidator implements Validator {
     @Override
     public void configure(Map<String, Object> config) {
         if (config.containsKey("dropPercent")) {
-            this.dropPercent = ((Number) config.get("dropPercent")).doubleValue();
+            this.dropPercent = ConfigUtils.toDouble(config.get("dropPercent"), dropPercent);
         }
         if (config.containsKey("zeroThresholdSecs")) {
-            this.zeroThresholdSecs = ((Number) config.get("zeroThresholdSecs")).intValue();
+            this.zeroThresholdSecs = ConfigUtils.toInt(config.get("zeroThresholdSecs"), zeroThresholdSecs);
         }
     }
 

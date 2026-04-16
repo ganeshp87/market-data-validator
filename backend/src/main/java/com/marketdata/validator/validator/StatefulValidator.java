@@ -203,10 +203,12 @@ public class StatefulValidator implements Validator {
     }
 
     private void addViolation(StateViolation violation) {
-        violations.add(violation);
-        // Bounded: trim to last maxViolations
-        while (violations.size() > maxViolations) {
-            violations.remove(0);
+        synchronized (violations) {
+            violations.add(violation);
+            // Bounded: trim to last maxViolations
+            while (violations.size() > maxViolations) {
+                violations.remove(0);
+            }
         }
     }
 
@@ -290,16 +292,16 @@ public class StatefulValidator implements Validator {
     @Override
     public void configure(Map<String, Object> config) {
         if (config.containsKey("passThreshold")) {
-            passThreshold = ((Number) config.get("passThreshold")).doubleValue();
+            passThreshold = ConfigUtils.toDouble(config.get("passThreshold"), passThreshold);
         }
         if (config.containsKey("warnThreshold")) {
-            warnThreshold = ((Number) config.get("warnThreshold")).doubleValue();
+            warnThreshold = ConfigUtils.toDouble(config.get("warnThreshold"), warnThreshold);
         }
         if (config.containsKey("staleThresholdMs")) {
-            staleThresholdMs = ((Number) config.get("staleThresholdMs")).longValue();
+            staleThresholdMs = ConfigUtils.toLong(config.get("staleThresholdMs"), staleThresholdMs);
         }
         if (config.containsKey("maxViolations")) {
-            maxViolations = ((Number) config.get("maxViolations")).intValue();
+            maxViolations = ConfigUtils.toInt(config.get("maxViolations"), maxViolations);
         }
     }
 

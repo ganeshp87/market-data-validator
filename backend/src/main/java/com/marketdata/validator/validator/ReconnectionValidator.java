@@ -146,7 +146,7 @@ public class ReconnectionValidator implements Validator {
     @Override
     public void configure(Map<String, Object> config) {
         if (config.containsKey("reconnectThresholdMs")) {
-            reconnectThresholdMs = ((Number) config.get("reconnectThresholdMs")).longValue();
+            reconnectThresholdMs = ConfigUtils.toLong(config.get("reconnectThresholdMs"), reconnectThresholdMs);
         }
     }
 

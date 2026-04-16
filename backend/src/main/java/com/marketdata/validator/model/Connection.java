@@ -46,7 +46,7 @@ public class Connection {
     /**
      * Record that a tick was received — updates lastTickAt and increments count.
      */
-    public void recordTick() {
+    public synchronized void recordTick() {
         this.lastTickAt = Instant.now();
         this.tickCount++;
     }

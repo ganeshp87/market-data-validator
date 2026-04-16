@@ -43,7 +43,7 @@ public class AccuracyValidator implements Validator {
     private final Map<String, Long> lastSequenceBySymbol = new ConcurrentHashMap<>();
     // If the gap since the last tick for a symbol exceeds this threshold, the feed was
     // likely down and the new tick is treated as a fresh baseline (no spike comparison).
-    private volatile long reconnectGapMs = 60_000L;
+    private final AtomicLong reconnectGapMs = new AtomicLong(60_000L);
     private final AtomicLong totalTicks = new AtomicLong(0);
     private final AtomicLong validTicks = new AtomicLong(0);
     private final AtomicLong invalidPriceCount = new AtomicLong(0);
@@ -94,7 +94,7 @@ public class AccuracyValidator implements Validator {
             Instant lastTime = lastTickTimeBySymbol.get(tick.getSymbol());
             if (prevPrice != null && lastTime != null && tick.getReceivedTimestamp() != null) {
                 long gapMs = Duration.between(lastTime, tick.getReceivedTimestamp()).toMillis();
-                if (gapMs >= reconnectGapMs) {
+                if (gapMs >= reconnectGapMs.get()) {
                     prevPrice = null; // skip spike detection — treat as new baseline
                 }
             }
@@ -174,16 +174,16 @@ public class AccuracyValidator implements Validator {
     @Override
     public void configure(Map<String, Object> config) {
         if (config.containsKey("passThreshold")) {
-            passThreshold = ((Number) config.get("passThreshold")).doubleValue();
+            passThreshold = ConfigUtils.toDouble(config.get("passThreshold"), passThreshold);
         }
         if (config.containsKey("warnThreshold")) {
-            warnThreshold = ((Number) config.get("warnThreshold")).doubleValue();
+            warnThreshold = ConfigUtils.toDouble(config.get("warnThreshold"), warnThreshold);
         }
         if (config.containsKey("largeMovePercent")) {
             largeMovePercent = new BigDecimal(config.get("largeMovePercent").toString());
         }
         if (config.containsKey("reconnectGapMs")) {
-            reconnectGapMs = ((Number) config.get("reconnectGapMs")).longValue();
+            reconnectGapMs.set(ConfigUtils.toLong(config.get("reconnectGapMs"), reconnectGapMs.get()));
         }
     }
 

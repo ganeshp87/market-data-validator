@@ -349,15 +349,15 @@ public class StreamController {
 
     private Map<String, Object> formatTick(Tick tick) {
         return Map.of(
-                "symbol", tick.getSymbol(),
-                "price", tick.getPrice().toPlainString(),
+                "symbol", tick.getSymbol() != null ? tick.getSymbol() : "",
+                "price", tick.getPrice() != null ? tick.getPrice().toPlainString() : "0",
                 "bid", tick.getBid() != null ? tick.getBid().toPlainString() : "",
                 "ask", tick.getAsk() != null ? tick.getAsk().toPlainString() : "",
                 "volume", tick.getVolume() != null ? tick.getVolume().toPlainString() : "",
                 "sequenceNum", tick.getSequenceNum(),
-                "exchangeTimestamp", tick.getExchangeTimestamp().toString(),
-                "receivedTimestamp", tick.getReceivedTimestamp().toString(),
-                "feedId", tick.getFeedId(),
+                "exchangeTimestamp", tick.getExchangeTimestamp() != null ? tick.getExchangeTimestamp().toString() : "",
+                "receivedTimestamp", tick.getReceivedTimestamp() != null ? tick.getReceivedTimestamp().toString() : "",
+                "feedId", tick.getFeedId() != null ? tick.getFeedId() : "",
                 "latency", tick.getLatencyMs()
         );
     }

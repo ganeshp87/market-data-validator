@@ -116,16 +116,25 @@ public class FinnhubAdapter implements FeedAdapter {
 
     private Tick parseTradeNode(JsonNode tradeNode) {
         try {
+            JsonNode sNode = tradeNode.get("s");
+            JsonNode pNode = tradeNode.get("p");
+            JsonNode vNode = tradeNode.get("v");
+            JsonNode tNode = tradeNode.get("t");
+            if (sNode == null || pNode == null || vNode == null || tNode == null) {
+                log.warn("Finnhub trade node missing required fields");
+                return null;
+            }
+
             Tick tick = new Tick();
-            tick.setSymbol(tradeNode.get("s").asText());
-            tick.setPrice(new BigDecimal(tradeNode.get("p").asText()));
-            tick.setVolume(new BigDecimal(tradeNode.get("v").asText()));
-            tick.setExchangeTimestamp(Instant.ofEpochMilli(tradeNode.get("t").asLong()));
+            tick.setSymbol(sNode.asText());
+            tick.setPrice(new BigDecimal(pNode.asText()));
+            tick.setVolume(new BigDecimal(vNode.asText()));
+            tick.setExchangeTimestamp(Instant.ofEpochMilli(tNode.asLong()));
             tick.setReceivedTimestamp(Instant.now());
             tick.setCorrelationId(UUID.randomUUID().toString());
 
             // Finnhub doesn't provide a sequence number — use trade timestamp as a proxy
-            tick.setSequenceNum(tradeNode.get("t").asLong());
+            tick.setSequenceNum(tNode.asLong());
 
             return tick;
         } catch (Exception e) {
