@@ -168,10 +168,15 @@ public class SourceValidator implements Validator {
     @Override
     public void configure(Map<String, Object> config) {
         if (config.containsKey("sourcePassThreshold")) {
-            passThreshold = ((Number) config.get("sourcePassThreshold")).doubleValue();
+            passThreshold = toDouble(config.get("sourcePassThreshold"), passThreshold);
         }
         if (config.containsKey("sourceWarnThreshold")) {
-            warnThreshold = ((Number) config.get("sourceWarnThreshold")).doubleValue();
+            warnThreshold = toDouble(config.get("sourceWarnThreshold"), warnThreshold);
         }
+    }
+
+    private static double toDouble(Object value, double fallback) {
+        if (value instanceof Number n) return n.doubleValue();
+        try { return Double.parseDouble(value.toString()); } catch (Exception e) { return fallback; }
     }
 }

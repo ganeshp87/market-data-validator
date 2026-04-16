@@ -161,11 +161,16 @@ public class CompletenessValidator implements Validator {
     @Override
     public void configure(Map<String, Object> config) {
         if (config.containsKey("heartbeatThresholdMs")) {
-            heartbeatThresholdMs = ((Number) config.get("heartbeatThresholdMs")).longValue();
+            heartbeatThresholdMs = toLong(config.get("heartbeatThresholdMs"), heartbeatThresholdMs);
         }
         if (config.containsKey("staleRecoveryWindowMs")) {
-            staleRecoveryWindowMs = ((Number) config.get("staleRecoveryWindowMs")).longValue();
+            staleRecoveryWindowMs = toLong(config.get("staleRecoveryWindowMs"), staleRecoveryWindowMs);
         }
+    }
+
+    private static long toLong(Object value, long fallback) {
+        if (value instanceof Number n) return n.longValue();
+        try { return Long.parseLong(value.toString()); } catch (Exception e) { return fallback; }
     }
 
     // --- Visible for testing ---

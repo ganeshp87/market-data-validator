@@ -231,14 +231,19 @@ public class SubscriptionValidator implements Validator {
     @Override
     public void configure(Map<String, Object> config) {
         if (config.containsKey("subscribeTimeoutMs")) {
-            subscribeTimeoutMs = ((Number) config.get("subscribeTimeoutMs")).longValue();
+            subscribeTimeoutMs = toLong(config.get("subscribeTimeoutMs"), subscribeTimeoutMs);
         }
         if (config.containsKey("unsubscribeGraceMs")) {
-            unsubscribeGraceMs = ((Number) config.get("unsubscribeGraceMs")).longValue();
+            unsubscribeGraceMs = toLong(config.get("unsubscribeGraceMs"), unsubscribeGraceMs);
         }
         if (config.containsKey("activeThresholdMs")) {
-            activeThresholdMs = ((Number) config.get("activeThresholdMs")).longValue();
+            activeThresholdMs = toLong(config.get("activeThresholdMs"), activeThresholdMs);
         }
+    }
+
+    private static long toLong(Object value, long fallback) {
+        if (value instanceof Number n) return n.longValue();
+        try { return Long.parseLong(value.toString()); } catch (Exception e) { return fallback; }
     }
 
     // --- Accessors for testing ---

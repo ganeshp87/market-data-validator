@@ -146,8 +146,13 @@ public class ReconnectionValidator implements Validator {
     @Override
     public void configure(Map<String, Object> config) {
         if (config.containsKey("reconnectThresholdMs")) {
-            reconnectThresholdMs = ((Number) config.get("reconnectThresholdMs")).longValue();
+            reconnectThresholdMs = toLong(config.get("reconnectThresholdMs"), reconnectThresholdMs);
         }
+    }
+
+    private static long toLong(Object value, long fallback) {
+        if (value instanceof Number n) return n.longValue();
+        try { return Long.parseLong(value.toString()); } catch (Exception e) { return fallback; }
     }
 
     // --- Visible for testing ---

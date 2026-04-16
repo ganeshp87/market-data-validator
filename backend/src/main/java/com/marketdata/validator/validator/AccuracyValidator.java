@@ -174,17 +174,27 @@ public class AccuracyValidator implements Validator {
     @Override
     public void configure(Map<String, Object> config) {
         if (config.containsKey("passThreshold")) {
-            passThreshold = ((Number) config.get("passThreshold")).doubleValue();
+            passThreshold = toDouble(config.get("passThreshold"), passThreshold);
         }
         if (config.containsKey("warnThreshold")) {
-            warnThreshold = ((Number) config.get("warnThreshold")).doubleValue();
+            warnThreshold = toDouble(config.get("warnThreshold"), warnThreshold);
         }
         if (config.containsKey("largeMovePercent")) {
             largeMovePercent = new BigDecimal(config.get("largeMovePercent").toString());
         }
         if (config.containsKey("reconnectGapMs")) {
-            reconnectGapMs = ((Number) config.get("reconnectGapMs")).longValue();
+            reconnectGapMs = toLong(config.get("reconnectGapMs"), reconnectGapMs);
         }
+    }
+
+    private static double toDouble(Object value, double fallback) {
+        if (value instanceof Number n) return n.doubleValue();
+        try { return Double.parseDouble(value.toString()); } catch (Exception e) { return fallback; }
+    }
+
+    private static long toLong(Object value, long fallback) {
+        if (value instanceof Number n) return n.longValue();
+        try { return Long.parseLong(value.toString()); } catch (Exception e) { return fallback; }
     }
 
     // --- Visible for testing ---

@@ -51,7 +51,10 @@ public class AlertStore {
             return ps;
         }, keyHolder);
 
-        alert.setId(keyHolder.getKey().longValue());
+        Number key = keyHolder.getKey();
+        if (key != null) {
+            alert.setId(key.longValue());
+        }
         notifyListeners(alert);
         return alert;
     }

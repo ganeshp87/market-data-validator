@@ -139,11 +139,16 @@ public class OrderingValidator implements Validator {
     @Override
     public void configure(Map<String, Object> config) {
         if (config.containsKey("passThreshold")) {
-            passThreshold = ((Number) config.get("passThreshold")).doubleValue();
+            passThreshold = toDouble(config.get("passThreshold"), passThreshold);
         }
         if (config.containsKey("warnThreshold")) {
-            warnThreshold = ((Number) config.get("warnThreshold")).doubleValue();
+            warnThreshold = toDouble(config.get("warnThreshold"), warnThreshold);
         }
+    }
+
+    private static double toDouble(Object value, double fallback) {
+        if (value instanceof Number n) return n.doubleValue();
+        try { return Double.parseDouble(value.toString()); } catch (Exception e) { return fallback; }
     }
 
     // --- Visible for testing ---

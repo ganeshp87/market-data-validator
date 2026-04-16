@@ -203,10 +203,12 @@ public class StatefulValidator implements Validator {
     }
 
     private void addViolation(StateViolation violation) {
-        violations.add(violation);
-        // Bounded: trim to last maxViolations
-        while (violations.size() > maxViolations) {
-            violations.remove(0);
+        synchronized (violations) {
+            violations.add(violation);
+            // Bounded: trim to last maxViolations
+            while (violations.size() > maxViolations) {
+                violations.remove(0);
+            }
         }
     }
 
@@ -290,17 +292,32 @@ public class StatefulValidator implements Validator {
     @Override
     public void configure(Map<String, Object> config) {
         if (config.containsKey("passThreshold")) {
-            passThreshold = ((Number) config.get("passThreshold")).doubleValue();
+            passThreshold = toDouble(config.get("passThreshold"), passThreshold);
         }
         if (config.containsKey("warnThreshold")) {
-            warnThreshold = ((Number) config.get("warnThreshold")).doubleValue();
+            warnThreshold = toDouble(config.get("warnThreshold"), warnThreshold);
         }
         if (config.containsKey("staleThresholdMs")) {
-            staleThresholdMs = ((Number) config.get("staleThresholdMs")).longValue();
+            staleThresholdMs = toLong(config.get("staleThresholdMs"), staleThresholdMs);
         }
         if (config.containsKey("maxViolations")) {
-            maxViolations = ((Number) config.get("maxViolations")).intValue();
+            maxViolations = toInt(config.get("maxViolations"), maxViolations);
         }
+    }
+
+    private static double toDouble(Object value, double fallback) {
+        if (value instanceof Number n) return n.doubleValue();
+        try { return Double.parseDouble(value.toString()); } catch (Exception e) { return fallback; }
+    }
+
+    private static long toLong(Object value, long fallback) {
+        if (value instanceof Number n) return n.longValue();
+        try { return Long.parseLong(value.toString()); } catch (Exception e) { return fallback; }
+    }
+
+    private static int toInt(Object value, int fallback) {
+        if (value instanceof Number n) return n.intValue();
+        try { return Integer.parseInt(value.toString()); } catch (Exception e) { return fallback; }
     }
 
     // --- Accessors for testing ---

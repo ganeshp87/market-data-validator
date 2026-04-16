@@ -65,12 +65,22 @@ public class BinanceAdapter implements FeedAdapter {
                 return null;
             }
 
+            JsonNode sNode = node.get("s");
+            JsonNode pNode = node.get("p");
+            JsonNode qNode = node.get("q");
+            JsonNode tNode = node.get("T");
+            JsonNode seqNode = node.get("t");
+            if (sNode == null || pNode == null || qNode == null || tNode == null || seqNode == null) {
+                log.warn("Binance trade message missing required fields");
+                return null;
+            }
+
             Tick tick = new Tick();
-            tick.setSymbol(node.get("s").asText());
-            tick.setPrice(new BigDecimal(node.get("p").asText()));
-            tick.setVolume(new BigDecimal(node.get("q").asText()));
-            tick.setExchangeTimestamp(Instant.ofEpochMilli(node.get("T").asLong()));
-            tick.setSequenceNum(node.get("t").asLong());
+            tick.setSymbol(sNode.asText());
+            tick.setPrice(new BigDecimal(pNode.asText()));
+            tick.setVolume(new BigDecimal(qNode.asText()));
+            tick.setExchangeTimestamp(Instant.ofEpochMilli(tNode.asLong()));
+            tick.setSequenceNum(seqNode.asLong());
             tick.setReceivedTimestamp(Instant.now());
             tick.setCorrelationId(UUID.randomUUID().toString());
 
