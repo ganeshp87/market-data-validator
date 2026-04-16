@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 /**
@@ -36,7 +37,7 @@ public class AlertGenerator {
 
     private final AtomicLong lastCheckTime = new AtomicLong(0);
     // Areas that already have an unacknowledged alert — refreshed periodically
-    private volatile Set<String> coveredAreas = ConcurrentHashMap.newKeySet();
+    private final AtomicReference<Set<String>> coveredAreas = new AtomicReference<>(ConcurrentHashMap.newKeySet());
     private volatile boolean initialized = false;
 
     public AlertGenerator(ValidatorEngine engine, AlertStore alertStore) {
@@ -72,9 +73,9 @@ public class AlertGenerator {
         // lastCheckTime is reset to lastCheck so the next call retries immediately.
         if (now - lastCheck >= CHECK_INTERVAL_MS && lastCheckTime.compareAndSet(lastCheck, now)) {
             try {
-                coveredAreas = alertStore.findUnacknowledged().stream()
+                coveredAreas.set(alertStore.findUnacknowledged().stream()
                         .map(Alert::getArea)
-                        .collect(Collectors.toSet());
+                        .collect(Collectors.toCollection(() -> ConcurrentHashMap.newKeySet())));
             } catch (Exception e) {
                 lastCheckTime.set(lastCheck); // reset timer — retry on next call
                 log.warn("Failed to refresh covered alert areas: {}", e.getMessage());
@@ -89,7 +90,7 @@ public class AlertGenerator {
             String areaName = result.getArea().name();
 
             // Skip if an unacknowledged alert already exists for this area
-            if (coveredAreas.contains(areaName)) {
+            if (coveredAreas.get().contains(areaName)) {
                 continue;
             }
 
@@ -101,7 +102,7 @@ public class AlertGenerator {
 
             Alert alert = new Alert(areaName, severity, message);
             alertStore.save(alert);
-            coveredAreas.add(areaName); // mark as covered immediately
+            coveredAreas.get().add(areaName); // mark as covered immediately
             log.info("Alert generated: [{}] {} — {}", severity, areaName, message);
         }
     }
