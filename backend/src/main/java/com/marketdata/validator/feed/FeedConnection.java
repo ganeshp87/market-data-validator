@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
@@ -48,10 +49,10 @@ public class FeedConnection {
     private volatile boolean intentionalDisconnect = false;
 
     // Reconnection lifecycle callbacks — wired by FeedManager to drive ReconnectionValidator
-    private volatile Runnable disconnectCallback;
-    private volatile Consumer<Duration> reconnectCallback;
-    private volatile Runnable reconnectFailedCallback;
-    private volatile Instant disconnectTime;
+    private final AtomicReference<Runnable> disconnectCallback = new AtomicReference<>();
+    private final AtomicReference<Consumer<Duration>> reconnectCallback = new AtomicReference<>();
+    private final AtomicReference<Runnable> reconnectFailedCallback = new AtomicReference<>();
+    private final AtomicReference<Instant> disconnectTime = new AtomicReference<>();
 
     // Clock offset estimation: adjusts for skew between local clock and exchange
     private final long[] offsetSamples = new long[OFFSET_SAMPLE_SIZE];
@@ -109,9 +110,9 @@ public class FeedConnection {
         tickListeners.remove(listener);
     }
 
-    public void setDisconnectCallback(Runnable cb) { this.disconnectCallback = cb; }
-    public void setReconnectCallback(Consumer<Duration> cb) { this.reconnectCallback = cb; }
-    public void setReconnectFailedCallback(Runnable cb) { this.reconnectFailedCallback = cb; }
+    public void setDisconnectCallback(Runnable cb) { this.disconnectCallback.set(cb); }
+    public void setReconnectCallback(Consumer<Duration> cb) { this.reconnectCallback.set(cb); }
+    public void setReconnectFailedCallback(Runnable cb) { this.reconnectFailedCallback.set(cb); }
 
     public Connection getConnection() {
         return connection;
@@ -143,10 +144,10 @@ public class FeedConnection {
                     StructuredArguments.keyValue("event", "connected"));
 
             // Notify reconnect lifecycle if this was a recovery (disconnectTime set by handleDisconnect)
-            Instant dt = disconnectTime;
+            Instant dt = disconnectTime.get();
             if (dt != null) {
-                disconnectTime = null;
-                Consumer<Duration> rcb = reconnectCallback;
+                disconnectTime.set(null);
+                Consumer<Duration> rcb = reconnectCallback.get();
                 if (rcb != null) rcb.accept(Duration.between(dt, Instant.now()));
             }
 
@@ -261,8 +262,8 @@ public class FeedConnection {
         }
 
         // Record when the disconnect happened and notify the reconnection validator
-        disconnectTime = Instant.now();
-        Runnable dcb = disconnectCallback;
+        disconnectTime.set(Instant.now());
+        Runnable dcb = disconnectCallback.get();
         if (dcb != null) dcb.run();
 
         // Different exchange servers may have different clock offsets — recalibrate after reconnect
@@ -276,7 +277,7 @@ public class FeedConnection {
                     StructuredArguments.keyValue("feed", connection.getName()),
                     MAX_RECONNECT_ATTEMPTS,
                     StructuredArguments.keyValue("event", "reconnect_exhausted"));
-            Runnable rfcb = reconnectFailedCallback;
+            Runnable rfcb = reconnectFailedCallback.get();
             if (rfcb != null) rfcb.run();
             return;
         }
@@ -307,7 +308,7 @@ public class FeedConnection {
      * Visible for testing.
      */
     long calculateBackoff(int attempt) {
-        long backoff = (long) Math.pow(2, attempt - 1) * 1000;
+        long backoff = (long) (Math.pow(2, (double) attempt - 1) * 1000);
         return Math.min(backoff, MAX_BACKOFF_MS);
     }
 }
