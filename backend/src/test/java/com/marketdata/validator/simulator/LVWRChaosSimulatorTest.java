@@ -340,9 +340,11 @@ class LVWRChaosSimulatorTest {
         scenarioConfig.setTargetScenario(FailureType.NEGATIVE_PRICE);
         scenarioConfig.setFailureRate(1.0);
         scenarioConfig.setTicksPerSecond(1000);
-        sim.updateConfig(scenarioConfig);
         sim.stop();
         t.join(2_000);
+
+        // Stop first to prevent concurrent increments, then updateConfig resets counters
+        sim.updateConfig(scenarioConfig);
 
         // All counters must be zero after the mode switch — Fix 7 isolation guarantee
         sim.getFailuresInjected().forEach((type, count) ->
@@ -372,9 +374,11 @@ class LVWRChaosSimulatorTest {
         changed.setTargetScenario(FailureType.NEGATIVE_PRICE);
         changed.setFailureRate(1.0);
         changed.setTicksPerSecond(1000);
-        sim.updateConfig(changed);
         sim.stop();
         t.join(2_000);
+
+        // Stop first to prevent concurrent increments, then updateConfig resets counters
+        sim.updateConfig(changed);
 
         // All counters must be zero — old PRICE_SPIKE counts must not leak into the new target's view
         sim.getFailuresInjected().forEach((type, count) ->

@@ -282,6 +282,7 @@ public class CompareController {
     }
 
     private long percentile(long[] sorted, int p) {
+        if (sorted.length == 0) return 0;
         int index = (int) Math.ceil((p / 100.0) * sorted.length) - 1;
         return sorted[Math.max(0, Math.min(index, sorted.length - 1))];
     }

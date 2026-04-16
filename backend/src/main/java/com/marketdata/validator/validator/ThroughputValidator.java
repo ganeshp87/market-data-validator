@@ -6,11 +6,13 @@ import com.marketdata.validator.model.ValidationResult.Area;
 import com.marketdata.validator.model.ValidationResult.Status;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -62,7 +64,7 @@ public class ThroughputValidator implements Validator {
     private volatile long maxThroughput = 0;
     private volatile double rollingAverage = 0.0;
     private volatile boolean dropDetected = false;
-    private volatile int consecutiveZeroSeconds = 0;
+    private final AtomicInteger consecutiveZeroSeconds = new AtomicInteger(0);
     private volatile boolean feedConnected = false;
     private volatile boolean zeroThroughputFail = false;
 
@@ -76,6 +78,7 @@ public class ThroughputValidator implements Validator {
     private double dropPercent = DEFAULT_DROP_PERCENT;
     private int zeroThresholdSecs = DEFAULT_ZERO_THRESHOLD_SECS;
 
+    @Autowired
     public ThroughputValidator() {
         this(DEFAULT_WINDOW_SIZE);
     }
@@ -149,12 +152,12 @@ public class ThroughputValidator implements Validator {
 
         // Zero throughput detection
         if (rate == 0 && feedConnected) {
-            consecutiveZeroSeconds++;
-            if (consecutiveZeroSeconds >= zeroThresholdSecs) {
+            consecutiveZeroSeconds.incrementAndGet();
+            if (consecutiveZeroSeconds.get() >= zeroThresholdSecs) {
                 zeroThroughputFail = true;
             }
         } else {
-            consecutiveZeroSeconds = 0;
+            consecutiveZeroSeconds.set(0);
             if (rate > 0) {
                 zeroThroughputFail = false;
             }
@@ -165,7 +168,7 @@ public class ThroughputValidator implements Validator {
     public void setFeedConnected(boolean connected) {
         this.feedConnected = connected;
         if (!connected) {
-            consecutiveZeroSeconds = 0;
+            consecutiveZeroSeconds.set(0);
             zeroThroughputFail = false;
         }
     }
@@ -203,7 +206,7 @@ public class ThroughputValidator implements Validator {
         result.getDetails().put("maxThroughput", maxThroughput);
         result.getDetails().put("totalTicks", total);
         result.getDetails().put("dropDetected", dropDetected);
-        result.getDetails().put("consecutiveZeroSeconds", consecutiveZeroSeconds);
+        result.getDetails().put("consecutiveZeroSeconds", consecutiveZeroSeconds.get());
         result.getDetails().put("windowSize", filled);
 
         return result;
@@ -216,7 +219,7 @@ public class ThroughputValidator implements Validator {
         maxThroughput = 0;
         rollingAverage = 0.0;
         dropDetected = false;
-        consecutiveZeroSeconds = 0;
+        consecutiveZeroSeconds.set(0);
         zeroThroughputFail = false;
         bufferLock.lock();
         try {
@@ -248,6 +251,6 @@ public class ThroughputValidator implements Validator {
     public double getRollingAverage() { return rollingAverage; }
     public long getMaxThroughput() { return maxThroughput; }
     public boolean isDropDetected() { return dropDetected; }
-    public int getConsecutiveZeroSeconds() { return consecutiveZeroSeconds; }
+    public int getConsecutiveZeroSeconds() { return consecutiveZeroSeconds.get(); }
     public long getTotalTicks() { return totalTicks.get(); }
 }
