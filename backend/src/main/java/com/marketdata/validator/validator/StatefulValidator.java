@@ -292,32 +292,17 @@ public class StatefulValidator implements Validator {
     @Override
     public void configure(Map<String, Object> config) {
         if (config.containsKey("passThreshold")) {
-            passThreshold = toDouble(config.get("passThreshold"), passThreshold);
+            passThreshold = ConfigUtils.toDouble(config.get("passThreshold"), passThreshold);
         }
         if (config.containsKey("warnThreshold")) {
-            warnThreshold = toDouble(config.get("warnThreshold"), warnThreshold);
+            warnThreshold = ConfigUtils.toDouble(config.get("warnThreshold"), warnThreshold);
         }
         if (config.containsKey("staleThresholdMs")) {
-            staleThresholdMs = toLong(config.get("staleThresholdMs"), staleThresholdMs);
+            staleThresholdMs = ConfigUtils.toLong(config.get("staleThresholdMs"), staleThresholdMs);
         }
         if (config.containsKey("maxViolations")) {
-            maxViolations = toInt(config.get("maxViolations"), maxViolations);
+            maxViolations = ConfigUtils.toInt(config.get("maxViolations"), maxViolations);
         }
-    }
-
-    private static double toDouble(Object value, double fallback) {
-        if (value instanceof Number n) return n.doubleValue();
-        try { return Double.parseDouble(value.toString()); } catch (Exception e) { return fallback; }
-    }
-
-    private static long toLong(Object value, long fallback) {
-        if (value instanceof Number n) return n.longValue();
-        try { return Long.parseLong(value.toString()); } catch (Exception e) { return fallback; }
-    }
-
-    private static int toInt(Object value, int fallback) {
-        if (value instanceof Number n) return n.intValue();
-        try { return Integer.parseInt(value.toString()); } catch (Exception e) { return fallback; }
     }
 
     // --- Accessors for testing ---

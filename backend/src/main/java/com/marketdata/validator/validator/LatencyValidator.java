@@ -183,10 +183,10 @@ public class LatencyValidator implements Validator {
     @Override
     public void configure(Map<String, Object> config) {
         if (config.containsKey("thresholdMs")) {
-            thresholdMs = toLong(config.get("thresholdMs"), thresholdMs);
+            thresholdMs = ConfigUtils.toLong(config.get("thresholdMs"), thresholdMs);
         }
         if (config.containsKey("bufferSize")) {
-            bufferSize = toInt(config.get("bufferSize"), bufferSize);
+            bufferSize = ConfigUtils.toInt(config.get("bufferSize"), bufferSize);
             bufferLock.lock();
             try {
                 buffer = new long[bufferSize];
@@ -196,16 +196,6 @@ public class LatencyValidator implements Validator {
                 bufferLock.unlock();
             }
         }
-    }
-
-    private static long toLong(Object value, long fallback) {
-        if (value instanceof Number n) return n.longValue();
-        try { return Long.parseLong(value.toString()); } catch (Exception e) { return fallback; }
-    }
-
-    private static int toInt(Object value, int fallback) {
-        if (value instanceof Number n) return n.intValue();
-        try { return Integer.parseInt(value.toString()); } catch (Exception e) { return fallback; }
     }
 
     /**

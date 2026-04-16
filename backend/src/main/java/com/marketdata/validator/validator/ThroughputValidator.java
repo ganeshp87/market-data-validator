@@ -235,21 +235,11 @@ public class ThroughputValidator implements Validator {
     @Override
     public void configure(Map<String, Object> config) {
         if (config.containsKey("dropPercent")) {
-            this.dropPercent = toDouble(config.get("dropPercent"), dropPercent);
+            this.dropPercent = ConfigUtils.toDouble(config.get("dropPercent"), dropPercent);
         }
         if (config.containsKey("zeroThresholdSecs")) {
-            this.zeroThresholdSecs = toInt(config.get("zeroThresholdSecs"), zeroThresholdSecs);
+            this.zeroThresholdSecs = ConfigUtils.toInt(config.get("zeroThresholdSecs"), zeroThresholdSecs);
         }
-    }
-
-    private static double toDouble(Object value, double fallback) {
-        if (value instanceof Number n) return n.doubleValue();
-        try { return Double.parseDouble(value.toString()); } catch (Exception e) { return fallback; }
-    }
-
-    private static int toInt(Object value, int fallback) {
-        if (value instanceof Number n) return n.intValue();
-        try { return Integer.parseInt(value.toString()); } catch (Exception e) { return fallback; }
     }
 
     // --- Accessors for testing ---
