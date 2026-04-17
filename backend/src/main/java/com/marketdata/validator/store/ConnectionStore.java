@@ -99,6 +99,6 @@ public class ConnectionStore {
         return Arrays.stream(stripped.split(","))
                 .map(String::trim)
                 .filter(s -> !s.isEmpty())
-                .collect(Collectors.toList());
+                .toList();
     }
 }

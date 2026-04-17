@@ -4,7 +4,6 @@ import com.marketdata.validator.feed.FeedManager;
 import com.marketdata.validator.simulator.FailureType;
 import com.marketdata.validator.simulator.LVWRChaosSimulator;
 import com.marketdata.validator.simulator.ScenarioConfig;
-import com.marketdata.validator.simulator.SimulatorMode;
 import com.marketdata.validator.validator.ValidatorEngine;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -89,7 +88,7 @@ public class SimulatorController {
             return ResponseEntity.notFound().build();
         }
         // Sanitise rate so it stays in [0.0, 1.0]
-        double rate = Math.max(0.0, Math.min(1.0, newConfig.getFailureRate()));
+        double rate = Math.clamp(newConfig.getFailureRate(), 0.0, 1.0);
         newConfig.setFailureRate(rate);
 
         // When the mode changes (e.g. CHAOS → CLEAN) reset all validator state so

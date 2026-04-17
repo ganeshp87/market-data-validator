@@ -36,6 +36,7 @@ import java.util.Optional;
 public class SessionController {
 
     private static final Logger log = LoggerFactory.getLogger(SessionController.class);
+    private static final String ERROR_KEY = "error";
 
     private final SessionRecorder recorder;
     private final SessionStore sessionStore;
@@ -71,22 +72,22 @@ public class SessionController {
      * Body: { "name": "btc-morning-session", "feedId": "feed-uuid" }
      */
     @PostMapping("/start")
-    public ResponseEntity<?> startRecording(@RequestBody Map<String, String> body) {
+    public ResponseEntity<Object> startRecording(@RequestBody Map<String, String> body) {
         String name = body.get("name");
         String feedId = body.get("feedId");
 
         if (name == null || name.isBlank()) {
             return ResponseEntity.badRequest()
-                    .body(Map.of("error", "'name' is required"));
+                    .body(Map.of(ERROR_KEY, "'name' is required"));
         }
         if (feedId == null || feedId.isBlank()) {
             return ResponseEntity.badRequest()
-                    .body(Map.of("error", "'feedId' is required"));
+                    .body(Map.of(ERROR_KEY, "'feedId' is required"));
         }
 
         if (recorder.isRecording()) {
             return ResponseEntity.badRequest()
-                    .body(Map.of("error", "Already recording session: "
+                    .body(Map.of(ERROR_KEY, "Already recording session: "
                             + recorder.getCurrentSession().getId()));
         }
 
@@ -98,16 +99,16 @@ public class SessionController {
      * Stop the current recording session.
      */
     @PostMapping("/{id}/stop")
-    public ResponseEntity<?> stopRecording(@PathVariable long id) {
+    public ResponseEntity<Object> stopRecording(@PathVariable long id) {
         if (!recorder.isRecording()) {
             return ResponseEntity.badRequest()
-                    .body(Map.of("error", "No active recording session"));
+                    .body(Map.of(ERROR_KEY, "No active recording session"));
         }
 
         Session current = recorder.getCurrentSession();
         if (current.getId() != id) {
             return ResponseEntity.badRequest()
-                    .body(Map.of("error",
+                    .body(Map.of(ERROR_KEY,
                             "Session " + id + " is not the active recording. Active: " + current.getId()));
         }
 
@@ -119,7 +120,7 @@ public class SessionController {
      * Delete a session and all its ticks.
      */
     @DeleteMapping("/{id}")
-    public ResponseEntity<?> deleteSession(@PathVariable long id) {
+    public ResponseEntity<Object> deleteSession(@PathVariable long id) {
         Optional<Session> session = sessionStore.findById(id);
         if (session.isEmpty()) {
             return ResponseEntity.notFound().build();
@@ -128,7 +129,7 @@ public class SessionController {
         // Don't delete a session that's actively recording
         if (recorder.isRecording() && recorder.getCurrentSession().getId() == id) {
             return ResponseEntity.badRequest()
-                    .body(Map.of("error", "Cannot delete session while recording. Stop recording first."));
+                    .body(Map.of(ERROR_KEY, "Cannot delete session while recording. Stop recording first."));
         }
 
         tickStore.deleteBySessionId(id);
@@ -140,7 +141,7 @@ public class SessionController {
      * Get all ticks from a recorded session.
      */
     @GetMapping("/{id}/ticks")
-    public ResponseEntity<?> getSessionTicks(@PathVariable long id) {
+    public ResponseEntity<Object> getSessionTicks(@PathVariable long id) {
         Optional<Session> session = sessionStore.findById(id);
         if (session.isEmpty()) {
             return ResponseEntity.notFound().build();
@@ -153,7 +154,7 @@ public class SessionController {
      * Query param: format=json (default) or format=csv
      */
     @GetMapping("/{id}/export")
-    public ResponseEntity<?> exportSession(@PathVariable long id,
+    public ResponseEntity<Object> exportSession(@PathVariable long id,
                                            @RequestParam(defaultValue = "json") String format) {
         Optional<Session> sessionOpt = sessionStore.findById(id);
         if (sessionOpt.isEmpty()) {
@@ -183,7 +184,7 @@ public class SessionController {
      * @param speed replay speed factor; must be in (0, 1000] — validated by SessionReplayer
      */
     @PostMapping("/{id}/replay")
-    public ResponseEntity<?> replaySession(@PathVariable long id,
+    public ResponseEntity<Object> replaySession(@PathVariable long id,
                                            @RequestParam(defaultValue = "1.0") double speed) {
         if (sessionStore.findById(id).isEmpty()) {
             return ResponseEntity.notFound().build();
@@ -193,12 +194,12 @@ public class SessionController {
         try {
             ticks = replayer.replaySync(id, speed);
         } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+            return ResponseEntity.badRequest().body(Map.of(ERROR_KEY, e.getMessage()));
         } catch (SessionReplayer.ReplayException e) {
             log.error("Replay of session {} failed at tick index {} (symbol={}): {}",
                     id, e.getTicksProcessed(), e.getFailingSymbol(), e.getMessage(), e);
             Map<String, Object> error = new LinkedHashMap<>();
-            error.put("error", e.getMessage());
+            error.put(ERROR_KEY, e.getMessage());
             error.put("ticksProcessedBeforeFailure", e.getTicksProcessed());
             error.put("failingTickSymbol", e.getFailingSymbol());
             return ResponseEntity.status(500).body(error);

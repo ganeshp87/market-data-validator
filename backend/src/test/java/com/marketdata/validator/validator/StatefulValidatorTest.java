@@ -14,6 +14,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class StatefulValidatorTest {
 
+    private static final String RULE_PRICE_NON_POSITIVE = "PRICE_NON_POSITIVE";
+
     private StatefulValidator validator;
 
     @BeforeEach
@@ -195,6 +197,44 @@ class StatefulValidatorTest {
         assertThat(result.getMetric()).isEqualTo(100.0);
     }
 
+    // --- Null / missing field inputs ---
+
+    @Test
+    void nullPriceTickProducesPriceNonPositiveViolation() {
+        Tick tick = new Tick("BTCUSDT", null, new BigDecimal("1.0"), 1, Instant.now(), "feed");
+        validator.onTick(tick);
+
+        // null price triggers PRICE_NON_POSITIVE; null guards in applyStateUpdate skip high/low update
+        assertThat(validator.getViolations()).hasSize(1);
+        assertThat(validator.getViolations().get(0).rule).isEqualTo(RULE_PRICE_NON_POSITIVE);
+        // open/high/low stay null → OHLC checks skipped
+        StatefulValidator.SymbolState state = validator.getSymbolState("BTCUSDT");
+        assertThat(state.high).isNull();
+        assertThat(state.low).isNull();
+    }
+
+    @Test
+    void nullVolumeTickIsHandledGracefully() {
+        Tick tick = new Tick("BTCUSDT", new BigDecimal("100"), null, 1, Instant.now(), "feed");
+        validator.onTick(tick);
+
+        // null volume skips cumulative-volume accumulation and VWAP update
+        StatefulValidator.SymbolState state = validator.getSymbolState("BTCUSDT");
+        assertThat(state.cumulativeVolume).isEqualByComparingTo("0");
+        assertThat(state.vwap).isNull();
+        assertThat(validator.getViolations()).isEmpty();
+    }
+
+    @Test
+    void negativeVolumeTickDoesNotAccumulateCumVol() {
+        Tick tick = new Tick("BTCUSDT", new BigDecimal("100"), new BigDecimal("-1.0"), 1, Instant.now(), "feed");
+        validator.onTick(tick);
+
+        // volume < 0 → branch `volume >= 0` is false → cumulativeVolume unchanged at 0
+        StatefulValidator.SymbolState state = validator.getSymbolState("BTCUSDT");
+        assertThat(state.cumulativeVolume).isEqualByComparingTo("0");
+    }
+
     // --- Validation Rule 1: Price > 0 ---
 
     @Test
@@ -202,7 +242,7 @@ class StatefulValidatorTest {
         feedTick("BTCUSDT", "0", "1.0", 1);
 
         assertThat(validator.getViolations()).hasSize(1);
-        assertThat(validator.getViolations().get(0).rule).isEqualTo("PRICE_NON_POSITIVE");
+        assertThat(validator.getViolations().get(0).rule).isEqualTo(RULE_PRICE_NON_POSITIVE);
     }
 
     @Test
@@ -210,7 +250,7 @@ class StatefulValidatorTest {
         feedTick("BTCUSDT", "-5.00", "1.0", 1);
 
         assertThat(validator.getViolations()).isNotEmpty();
-        assertThat(validator.getViolations().get(0).rule).isEqualTo("PRICE_NON_POSITIVE");
+        assertThat(validator.getViolations().get(0).rule).isEqualTo(RULE_PRICE_NON_POSITIVE);
     }
 
     // --- Validation Rule 5: VWAP between low and high (always true for normal prices) ---

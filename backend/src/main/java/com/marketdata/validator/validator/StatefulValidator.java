@@ -120,40 +120,31 @@ public class StatefulValidator implements Validator {
      * Empty list = all rules pass.
      */
     private List<String> applyAndValidate(SymbolState state, Tick tick) {
-        List<String> violated = new ArrayList<>();
-        BigDecimal price = tick.getPrice();
-        BigDecimal volume = tick.getVolume();
+        BigDecimal prevCumulativeVolume = state.cumulativeVolume;
+        applyStateUpdate(state, tick.getPrice(), tick.getVolume());
+        return validateRules(state, tick.getPrice(), prevCumulativeVolume, tick.getSymbol());
+    }
 
-        // --- Apply state update ---
-
-        // First tick for this symbol → initialize OHLC
+    private void applyStateUpdate(SymbolState state, BigDecimal price, BigDecimal volume) {
         if (state.open == null) {
             state.open = price;
             state.high = price;
             state.low = price;
         }
-
         state.lastPrice = price;
         state.lastTickTime = clock.instant();
         state.tickCount++;
 
-        // Update high/low
-        if (price != null) {
-            if (state.high == null || price.compareTo(state.high) > 0) {
-                state.high = price;
-            }
-            if (state.low == null || price.compareTo(state.low) < 0) {
-                state.low = price;
-            }
+        if (price != null && (state.high == null || price.compareTo(state.high) > 0)) {
+            state.high = price;
+        }
+        if (price != null && (state.low == null || price.compareTo(state.low) < 0)) {
+            state.low = price;
         }
 
-        // Update cumulative volume
-        BigDecimal prevCumulativeVolume = state.cumulativeVolume;
         if (volume != null && volume.compareTo(BigDecimal.ZERO) >= 0) {
             state.cumulativeVolume = state.cumulativeVolume.add(volume);
         }
-
-        // Update VWAP: Σ(price × volume) / Σ(volume)
         if (price != null && volume != null && volume.compareTo(BigDecimal.ZERO) > 0) {
             state.priceVolumeSum = state.priceVolumeSum.add(price.multiply(volume));
             state.volumeSum = state.volumeSum.add(volume);
@@ -161,44 +152,33 @@ public class StatefulValidator implements Validator {
                 state.vwap = state.priceVolumeSum.divide(state.volumeSum, MathContext.DECIMAL64);
             }
         }
+    }
 
-        // --- Validate state consistency ---
-
-        // Rule 1: price > 0
+    private List<String> validateRules(SymbolState state, BigDecimal price,
+                                       BigDecimal prevCumulativeVolume, String symbol) {
+        List<String> violated = new ArrayList<>();
         if (price == null || price.compareTo(BigDecimal.ZERO) <= 0) {
             violated.add("PRICE_NON_POSITIVE");
-            log.debug("Rule violated: PRICE_NON_POSITIVE for {} price={}", tick.getSymbol(), price);
+            log.debug("Rule violated: PRICE_NON_POSITIVE for {} price={}", symbol, price);
         }
-
-        // Rule 2: low <= open <= high
-        if (state.low != null && state.open != null && state.high != null) {
-            if (state.low.compareTo(state.open) > 0 || state.open.compareTo(state.high) > 0) {
-                violated.add("OHLC_OPEN_OUT_OF_RANGE");
-            }
+        if (state.low != null && state.open != null && state.high != null
+                && (state.low.compareTo(state.open) > 0 || state.open.compareTo(state.high) > 0)) {
+            violated.add("OHLC_OPEN_OUT_OF_RANGE");
         }
-
-        // Rule 3: low <= lastPrice <= high
-        if (state.low != null && state.lastPrice != null && state.high != null) {
-            if (state.lastPrice.compareTo(state.low) < 0 || state.lastPrice.compareTo(state.high) > 0) {
-                violated.add("PRICE_OUT_OF_OHLC_RANGE");
-            }
+        if (state.low != null && state.lastPrice != null && state.high != null
+                && (state.lastPrice.compareTo(state.low) < 0 || state.lastPrice.compareTo(state.high) > 0)) {
+            violated.add("PRICE_OUT_OF_OHLC_RANGE");
         }
-
-        // Rule 4: cumulativeVolume >= 0 and non-decreasing
         if (state.cumulativeVolume.compareTo(BigDecimal.ZERO) < 0) {
             violated.add("NEGATIVE_CUMULATIVE_VOLUME");
         }
         if (state.cumulativeVolume.compareTo(prevCumulativeVolume) < 0) {
             violated.add("VOLUME_DECREASED");
         }
-
-        // Rule 5: VWAP between low and high
-        if (state.vwap != null && state.low != null && state.high != null) {
-            if (state.vwap.compareTo(state.low) < 0 || state.vwap.compareTo(state.high) > 0) {
-                violated.add("VWAP_OUT_OF_RANGE");
-            }
+        if (state.vwap != null && state.low != null && state.high != null
+                && (state.vwap.compareTo(state.low) < 0 || state.vwap.compareTo(state.high) > 0)) {
+            violated.add("VWAP_OUT_OF_RANGE");
         }
-
         return violated;
     }
 

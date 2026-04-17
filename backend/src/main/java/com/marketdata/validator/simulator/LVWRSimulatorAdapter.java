@@ -2,9 +2,6 @@ package com.marketdata.validator.simulator;
 
 import com.marketdata.validator.feed.FeedAdapter;
 import com.marketdata.validator.model.Tick;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
@@ -25,8 +22,6 @@ import java.util.UUID;
  *    by external feeds, so the validator and SSE pipeline exercise the real runtime path."
  */
 public class LVWRSimulatorAdapter implements FeedAdapter {
-
-    private static final Logger log = LoggerFactory.getLogger(LVWRSimulatorAdapter.class);
 
     @Override
     public String getSubscribeMessage(List<String> symbols) {

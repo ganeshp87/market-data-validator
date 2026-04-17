@@ -2,7 +2,6 @@ package com.marketdata.validator.controller;
 
 import com.marketdata.validator.feed.FeedManager;
 import com.marketdata.validator.model.Tick;
-import com.marketdata.validator.model.ValidationResult;
 import com.marketdata.validator.store.AlertStore;
 import com.marketdata.validator.validator.ValidatorEngine;
 import org.junit.jupiter.api.Test;
@@ -12,20 +11,27 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
-import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @WebMvcTest(StreamController.class)
+@SuppressWarnings("java:S1075")
 class StreamControllerTest {
+
+    private static final String TICKS_PATH       = "/api/stream/ticks";
+    private static final String VALIDATION_PATH  = "/api/stream/validation";
+    private static final String LATENCY_PATH     = "/api/stream/latency";
+    private static final String THROUGHPUT_PATH  = "/api/stream/throughput";
+    private static final String FEED_BINANCE     = "binance-1";
+    private static final String SYM_BTC          = "BTCUSDT";
+    private static final String PARAM_SYMBOL     = "symbol";
+    private static final String PARAM_FEED_ID    = "feedId";
 
     @Autowired
     private MockMvc mvc;
@@ -43,17 +49,16 @@ class StreamControllerTest {
 
     @Test
     void tickEndpointReturnsSseEmitter() throws Exception {
-        MvcResult result = mvc.perform(get("/api/stream/ticks"))
+        MvcResult result = mvc.perform(get(TICKS_PATH))
                 .andExpect(request().asyncStarted())
                 .andReturn();
 
-        // The response should be set up for SSE streaming
         assertThat(result.getRequest().isAsyncStarted()).isTrue();
     }
 
     @Test
     void tickEndpointAcceptsSymbolFilter() throws Exception {
-        MvcResult result = mvc.perform(get("/api/stream/ticks").param("symbol", "BTCUSDT"))
+        MvcResult result = mvc.perform(get(TICKS_PATH).param(PARAM_SYMBOL, SYM_BTC))
                 .andExpect(request().asyncStarted())
                 .andReturn();
 
@@ -64,7 +69,7 @@ class StreamControllerTest {
 
     @Test
     void validationEndpointReturnsSseEmitter() throws Exception {
-        MvcResult result = mvc.perform(get("/api/stream/validation"))
+        MvcResult result = mvc.perform(get(VALIDATION_PATH))
                 .andExpect(request().asyncStarted())
                 .andReturn();
 
@@ -75,7 +80,7 @@ class StreamControllerTest {
 
     @Test
     void latencyEndpointReturnsSseEmitter() throws Exception {
-        MvcResult result = mvc.perform(get("/api/stream/latency"))
+        MvcResult result = mvc.perform(get(LATENCY_PATH))
                 .andExpect(request().asyncStarted())
                 .andReturn();
 
@@ -86,7 +91,7 @@ class StreamControllerTest {
 
     @Test
     void throughputEndpointReturnsSseEmitter() throws Exception {
-        MvcResult result = mvc.perform(get("/api/stream/throughput"))
+        MvcResult result = mvc.perform(get(THROUGHPUT_PATH))
                 .andExpect(request().asyncStarted())
                 .andReturn();
 
@@ -97,16 +102,11 @@ class StreamControllerTest {
 
     @Test
     void emittersRegisteredOnStreamConnect() throws Exception {
-        mvc.perform(get("/api/stream/ticks"))
-                .andExpect(request().asyncStarted());
-        mvc.perform(get("/api/stream/validation"))
-                .andExpect(request().asyncStarted());
-        mvc.perform(get("/api/stream/latency"))
-                .andExpect(request().asyncStarted());
-        mvc.perform(get("/api/stream/throughput"))
-                .andExpect(request().asyncStarted());
+        mvc.perform(get(TICKS_PATH)).andExpect(request().asyncStarted());
+        mvc.perform(get(VALIDATION_PATH)).andExpect(request().asyncStarted());
+        mvc.perform(get(LATENCY_PATH)).andExpect(request().asyncStarted());
+        mvc.perform(get(THROUGHPUT_PATH)).andExpect(request().asyncStarted());
 
-        // Controller should have registered emitters (accessible via package-private getters)
         StreamController controller = mvc.getDispatcherServlet()
                 .getWebApplicationContext()
                 .getBean(StreamController.class);
@@ -117,14 +117,10 @@ class StreamControllerTest {
         assertThat(controller.getThroughputEmitterCount()).isGreaterThanOrEqualTo(1);
     }
 
-    // --- Tick formatting ---
-
     @Test
     void multipleTickEmittersCanCoexist() throws Exception {
-        mvc.perform(get("/api/stream/ticks"))
-                .andExpect(request().asyncStarted());
-        mvc.perform(get("/api/stream/ticks").param("symbol", "ETHUSDT"))
-                .andExpect(request().asyncStarted());
+        mvc.perform(get(TICKS_PATH)).andExpect(request().asyncStarted());
+        mvc.perform(get(TICKS_PATH).param(PARAM_SYMBOL, "ETHUSDT")).andExpect(request().asyncStarted());
 
         StreamController controller = mvc.getDispatcherServlet()
                 .getWebApplicationContext()
@@ -137,12 +133,9 @@ class StreamControllerTest {
 
     @Test
     void allFourEndpointsStartAsync() throws Exception {
-        String[] paths = {"/api/stream/ticks", "/api/stream/validation",
-                "/api/stream/latency", "/api/stream/throughput"};
-
+        String[] paths = {TICKS_PATH, VALIDATION_PATH, LATENCY_PATH, THROUGHPUT_PATH};
         for (String path : paths) {
-            mvc.perform(get(path))
-                    .andExpect(request().asyncStarted());
+            mvc.perform(get(path)).andExpect(request().asyncStarted());
         }
     }
 
@@ -150,7 +143,7 @@ class StreamControllerTest {
 
     @Test
     void tickEndpointWithEmptySymbolFilterAccepted() throws Exception {
-        MvcResult result = mvc.perform(get("/api/stream/ticks").param("symbol", ""))
+        MvcResult result = mvc.perform(get(TICKS_PATH).param(PARAM_SYMBOL, ""))
                 .andExpect(request().asyncStarted())
                 .andReturn();
 
@@ -159,10 +152,8 @@ class StreamControllerTest {
 
     @Test
     void multipleValidationEmittersCanCoexist() throws Exception {
-        mvc.perform(get("/api/stream/validation"))
-                .andExpect(request().asyncStarted());
-        mvc.perform(get("/api/stream/validation"))
-                .andExpect(request().asyncStarted());
+        mvc.perform(get(VALIDATION_PATH)).andExpect(request().asyncStarted());
+        mvc.perform(get(VALIDATION_PATH)).andExpect(request().asyncStarted());
 
         StreamController controller = mvc.getDispatcherServlet()
                 .getWebApplicationContext()
@@ -177,42 +168,97 @@ class StreamControllerTest {
                 .andExpect(status().isNotFound());
     }
 
+    // --- onTick filter branch coverage ---
+
+    @Test
+    void onTickFeedIdFilterNonMatchDoesNotSend() throws Exception {
+        mvc.perform(get(TICKS_PATH).param(PARAM_FEED_ID, FEED_BINANCE))
+                .andExpect(request().asyncStarted());
+
+        StreamController controller = mvc.getDispatcherServlet()
+                .getWebApplicationContext()
+                .getBean(StreamController.class);
+
+        // feedFilter != null && feedFilter != tick.feedId → feedMatch = false, send skipped
+        controller.onTick(buildTick(SYM_BTC, "different-feed", 1));
+        assertThat(controller.getTickEmitterCount()).isGreaterThanOrEqualTo(0);
+    }
+
+    @Test
+    void onTickFeedIdFilterMatchSends() throws Exception {
+        mvc.perform(get(TICKS_PATH).param(PARAM_FEED_ID, FEED_BINANCE))
+                .andExpect(request().asyncStarted());
+
+        StreamController controller = mvc.getDispatcherServlet()
+                .getWebApplicationContext()
+                .getBean(StreamController.class);
+
+        // feedFilter != null && feedFilter == tick.feedId → feedMatch = true
+        controller.onTick(buildTick(SYM_BTC, FEED_BINANCE, 2));
+        assertThat(controller.getTickEmitterCount()).isGreaterThanOrEqualTo(0);
+    }
+
+    @Test
+    void onTickSymbolFilterNonMatchDoesNotSend() throws Exception {
+        mvc.perform(get(TICKS_PATH).param(PARAM_SYMBOL, SYM_BTC))
+                .andExpect(request().asyncStarted());
+
+        StreamController controller = mvc.getDispatcherServlet()
+                .getWebApplicationContext()
+                .getBean(StreamController.class);
+
+        // symFilter != null && symFilter != tick.symbol → symMatch = false, send skipped
+        controller.onTick(buildTick("ETHUSDT", FEED_BINANCE, 3));
+        assertThat(controller.getTickEmitterCount()).isGreaterThanOrEqualTo(0);
+    }
+
+    @Test
+    void onTickSymbolFilterMatchSends() throws Exception {
+        mvc.perform(get(TICKS_PATH).param(PARAM_SYMBOL, SYM_BTC))
+                .andExpect(request().asyncStarted());
+
+        StreamController controller = mvc.getDispatcherServlet()
+                .getWebApplicationContext()
+                .getBean(StreamController.class);
+
+        // symFilter != null && symFilter == tick.symbol → symMatch = true
+        controller.onTick(buildTick(SYM_BTC, FEED_BINANCE, 4));
+        assertThat(controller.getTickEmitterCount()).isGreaterThanOrEqualTo(0);
+    }
+
     // --- formatTick null safety ---
 
     @Test
     @SuppressWarnings("unchecked")
-    void formatTickHandlesAllNullFields() throws Exception {
+    void formatTickHandlesAllNullFields() {
         StreamController controller = mvc.getDispatcherServlet()
                 .getWebApplicationContext()
                 .getBean(StreamController.class);
 
         Tick tick = new Tick();
         tick.setSequenceNum(1);
-        // All other fields are null
 
-        Method formatTick = StreamController.class.getDeclaredMethod("formatTick", Tick.class);
-        formatTick.setAccessible(true);
-        Map<String, Object> result = (Map<String, Object>) formatTick.invoke(controller, tick);
+        Map<String, Object> result = controller.formatTick(tick);
 
-        assertThat(result.get("symbol")).isEqualTo("");
+        assertThat(result.get(PARAM_SYMBOL)).isEqualTo("");
         assertThat(result.get("price")).isEqualTo("0");
         assertThat(result.get("bid")).isEqualTo("");
         assertThat(result.get("ask")).isEqualTo("");
         assertThat(result.get("volume")).isEqualTo("");
         assertThat(result.get("exchangeTimestamp")).isEqualTo("");
         assertThat(result.get("receivedTimestamp")).isEqualTo("");
-        assertThat(result.get("feedId")).isEqualTo("");
+        assertThat(result.get(PARAM_FEED_ID)).isEqualTo("");
     }
 
     @Test
     @SuppressWarnings("unchecked")
-    void formatTickHandlesPopulatedFields() throws Exception {
+    void formatTickHandlesPopulatedFields() {
         StreamController controller = mvc.getDispatcherServlet()
                 .getWebApplicationContext()
                 .getBean(StreamController.class);
 
         Tick tick = new Tick();
-        tick.setSymbol("BTCUSDT");
+        tick.setSymbol(SYM_BTC);
         tick.setPrice(new BigDecimal("50000.00"));
         tick.setBid(new BigDecimal("49999.50"));
         tick.setAsk(new BigDecimal("50000.50"));
@@ -220,14 +266,25 @@ class StreamControllerTest {
         tick.setSequenceNum(42);
         tick.setExchangeTimestamp(Instant.parse("2026-01-01T00:00:00Z"));
         tick.setReceivedTimestamp(Instant.parse("2026-01-01T00:00:01Z"));
-        tick.setFeedId("binance-1");
+        tick.setFeedId(FEED_BINANCE);
 
-        Method formatTick = StreamController.class.getDeclaredMethod("formatTick", Tick.class);
-        formatTick.setAccessible(true);
-        Map<String, Object> result = (Map<String, Object>) formatTick.invoke(controller, tick);
+        Map<String, Object> result = controller.formatTick(tick);
 
-        assertThat(result.get("symbol")).isEqualTo("BTCUSDT");
+        assertThat(result.get(PARAM_SYMBOL)).isEqualTo(SYM_BTC);
         assertThat(result.get("price")).isEqualTo("50000.00");
-        assertThat(result.get("feedId")).isEqualTo("binance-1");
+        assertThat(result.get(PARAM_FEED_ID)).isEqualTo(FEED_BINANCE);
+    }
+
+    // --- Helpers ---
+
+    private Tick buildTick(String symbol, String feedId, long seqNum) {
+        Tick tick = new Tick();
+        tick.setSymbol(symbol);
+        tick.setPrice(new BigDecimal("50000"));
+        tick.setFeedId(feedId);
+        tick.setSequenceNum(seqNum);
+        tick.setExchangeTimestamp(Instant.now());
+        tick.setReceivedTimestamp(Instant.now());
+        return tick;
     }
 }

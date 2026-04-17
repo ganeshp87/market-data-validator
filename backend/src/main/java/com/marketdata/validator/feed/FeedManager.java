@@ -161,7 +161,7 @@ public class FeedManager {
                 try {
                     if (!existing.waitForStop(10_000)) {
                         // Avoid logging user-controlled data directly
-                        log.warn("Old simulator did not stop within 10s  proceeding anyway");
+                        log.warn("Old simulator did not stop within 10s; proceeding anyway");
                     }
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
