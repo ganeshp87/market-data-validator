@@ -1,5 +1,6 @@
 package com.marketdata.validator.simulator;
 
+import java.security.SecureRandom;
 import java.util.Random;
 
 /**
@@ -18,7 +19,7 @@ public class ScenarioEngine {
     private int chaosIndex = 0;
 
     public ScenarioEngine() {
-        this(new Random());
+        this(new SecureRandom());
     }
 
     /** Constructor with injectable RNG — used for testing. */
