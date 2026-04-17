@@ -137,7 +137,7 @@ public class ValidatorEngine {
     private List<Validator> fanOutToPerFeedValidators(Tick tick) {
         String feedId = tick.getFeedId();
         if (feedId == null || feedId.isBlank()) {
-            return null;
+            return Collections.emptyList();
         }
         feedTickCounts.computeIfAbsent(feedId, k -> new AtomicLong(0)).incrementAndGet();
         List<Validator> perFeed = feedValidators.computeIfAbsent(feedId, k -> createValidatorSet());
@@ -157,7 +157,7 @@ public class ValidatorEngine {
         if (now - lastNotifyTimeMs >= NOTIFY_INTERVAL_MS) {
             lastNotifyTimeMs = now;
             notifyListeners();
-            if (perFeed != null) {
+            if (!perFeed.isEmpty()) {
                 notifyPerFeedListeners(feedId, perFeed);
             }
         }

@@ -180,7 +180,7 @@ public class StreamController {
 
     // --- Internal: Tick handling ---
 
-    private void onTick(Tick tick) {
+    void onTick(Tick tick) {
         ticksInWindow.incrementAndGet();
         totalTicksEver.incrementAndGet();
 
@@ -338,7 +338,7 @@ public class StreamController {
 
     // --- Internal: Formatting ---
 
-    private Map<String, Object> formatTick(Tick tick) {
+    Map<String, Object> formatTick(Tick tick) {
         return Map.of(
                 "symbol", tick.getSymbol() != null ? tick.getSymbol() : "",
                 "price", tick.getPrice() != null ? tick.getPrice().toPlainString() : "0",

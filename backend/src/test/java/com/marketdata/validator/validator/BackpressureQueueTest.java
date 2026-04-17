@@ -271,6 +271,25 @@ class BackpressureQueueTest {
         assertThat(bpq.isRunning()).isTrue();
     }
 
+    @Test
+    void processTickCatchBlockCoveredWhenEngineThrows() throws InterruptedException {
+        ValidatorEngine throwingEngine = new ValidatorEngine(List.of()) {
+            @Override
+            public void onTick(Tick tick) {
+                throw new IllegalStateException("Simulated engine failure");
+            }
+        };
+        bpq = new BackpressureQueue(throwingEngine, 100, BackpressureQueue.DropPolicy.DROP_OLDEST);
+
+        bpq.submit(createTick(1));
+        Thread.sleep(300);
+
+        // Exception was caught; queue is still running and tick was submitted but not processed
+        assertThat(bpq.isRunning()).isTrue();
+        assertThat(bpq.getTotalSubmitted()).isEqualTo(1);
+        assertThat(bpq.getTotalProcessed()).isEqualTo(0);
+    }
+
     // ── High-throughput burst ───────────────────────────
 
     @Test
