@@ -1,0 +1,194 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BackpressureQueue.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.validator</a> &gt; <span class="el_source">BackpressureQueue.java</span></div><h1>BackpressureQueue.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.validator;
+
+import com.marketdata.validator.feed.FeedManager;
+import com.marketdata.validator.model.Tick;
+import net.logstash.logback.argument.StructuredArguments;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import jakarta.annotation.PreDestroy;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+
+/**
+ * Bounded queue between feed ingestion and the ValidatorEngine.
+ *
+ * Blueprint Section 5.6 — Backpressure Strategy:
+ *   - Bounded queue between feed ingestion and validator engine
+ *   - If incoming rate exceeds processing capacity, applies backpressure
+ *   - Drop policy: oldest ticks evicted when queue full (configurable)
+ *   - Metrics emitted on drop count for alerting
+ *
+ * Data flow:
+ *   FeedManager → BackpressureQueue.submit() → [bounded queue] → consumer thread → ValidatorEngine.onTick()
+ *
+ * The consumer thread drains ticks one-at-a-time to preserve ordering.
+ * This decouples the WebSocket ingestion thread from the (potentially slower)
+ * validation pipeline, preventing slow validators from stalling the feed.
+ */
+@Component
+public class BackpressureQueue {
+
+<span class="fc" id="L35">    private static final Logger log = LoggerFactory.getLogger(BackpressureQueue.class);</span>
+    static final int DEFAULT_CAPACITY = 10_000;
+
+    /**
+     * What happens when the queue is full:
+     * - DROP_OLDEST: evict the head (oldest tick), add the new one → preserves freshness
+     * - DROP_NEWEST: reject the new tick → preserves history
+     */
+<span class="fc" id="L43">    public enum DropPolicy { DROP_OLDEST, DROP_NEWEST }</span>
+
+    private final ValidatorEngine engine;
+    private final ArrayBlockingQueue&lt;Tick&gt; queue;
+    private final DropPolicy dropPolicy;
+<span class="fc" id="L48">    private final AtomicLong droppedCount = new AtomicLong(0);</span>
+<span class="fc" id="L49">    private final AtomicLong totalSubmitted = new AtomicLong(0);</span>
+<span class="fc" id="L50">    private final AtomicLong totalProcessed = new AtomicLong(0);</span>
+<span class="fc" id="L51">    private volatile boolean running = true;</span>
+    private final Thread consumerThread;
+
+    // Lock object for the DROP_OLDEST poll+offer pair to prevent concurrent race
+<span class="fc" id="L55">    private final Object dropLock = new Object();</span>
+
+    /**
+     * Spring-wired constructor. Registers as a FeedManager global tick listener
+     * so that all incoming ticks flow through this queue before reaching validators.
+     */
+    @Autowired
+    public BackpressureQueue(FeedManager feedManager, ValidatorEngine engine) {
+<span class="fc" id="L63">        this(engine, DEFAULT_CAPACITY, DropPolicy.DROP_OLDEST);</span>
+<span class="fc" id="L64">        feedManager.addGlobalTickListener(this::submit);</span>
+<span class="fc" id="L65">    }</span>
+
+    /**
+     * Test constructor — no FeedManager registration.
+     * Allows unit tests to call submit() directly without mocking FeedManager.
+     */
+<span class="fc" id="L71">    BackpressureQueue(ValidatorEngine engine, int capacity, DropPolicy dropPolicy) {</span>
+<span class="fc" id="L72">        this.engine = engine;</span>
+<span class="fc" id="L73">        this.queue = new ArrayBlockingQueue&lt;&gt;(capacity);</span>
+<span class="fc" id="L74">        this.dropPolicy = dropPolicy;</span>
+
+<span class="fc" id="L76">        this.consumerThread = new Thread(this::consumeLoop, &quot;backpressure-consumer&quot;);</span>
+<span class="fc" id="L77">        this.consumerThread.setDaemon(true);</span>
+<span class="fc" id="L78">        this.consumerThread.start();</span>
+
+<span class="fc" id="L80">        log.info(&quot;BackpressureQueue started: {} {} {}&quot;,</span>
+<span class="fc" id="L81">                StructuredArguments.keyValue(&quot;capacity&quot;, capacity),</span>
+<span class="fc" id="L82">                StructuredArguments.keyValue(&quot;policy&quot;, dropPolicy),</span>
+<span class="fc" id="L83">                StructuredArguments.keyValue(&quot;event&quot;, &quot;queue_started&quot;));</span>
+<span class="fc" id="L84">    }</span>
+
+    /**
+     * Submit a tick into the bounded queue.
+     * Called from the WebSocket ingestion thread (via FeedManager listener).
+     *
+     * If the queue is full, the drop policy determines what happens:
+     * - DROP_OLDEST: poll (remove head) + offer (add new) — O(1) amortized
+     * - DROP_NEWEST: silently discard the incoming tick — O(1)
+     *
+     * Never blocks the caller — critical for non-blocking ingestion.
+     */
+    public void submit(Tick tick) {
+<span class="fc" id="L97">        totalSubmitted.incrementAndGet();</span>
+
+<span class="fc bfc" id="L99" title="All 2 branches covered.">        if (dropPolicy == DropPolicy.DROP_NEWEST) {</span>
+<span class="fc bfc" id="L100" title="All 2 branches covered.">            if (!queue.offer(tick)) {</span>
+<span class="fc" id="L101">                droppedCount.incrementAndGet();</span>
+<span class="fc" id="L102">                log.trace(&quot;Queue full — dropped newest tick {} {}&quot;,</span>
+<span class="fc" id="L103">                        StructuredArguments.keyValue(&quot;seq&quot;, tick.getSequenceNum()),</span>
+<span class="fc" id="L104">                        StructuredArguments.keyValue(&quot;event&quot;, &quot;tick_dropped&quot;));</span>
+            }
+        } else {
+            // DROP_OLDEST (default)
+            // Synchronize the entire offer-or-drop sequence so a concurrent
+            // thread's initial offer() cannot steal a slot freed by our poll(),
+            // which would silently lose the evicted tick without counting it.
+<span class="fc" id="L111">            synchronized (dropLock) {</span>
+<span class="fc bfc" id="L112" title="All 2 branches covered.">                if (!queue.offer(tick)) {</span>
+<span class="fc" id="L113">                    queue.poll(); // Evict oldest</span>
+<span class="fc" id="L114">                    queue.offer(tick); // Add new (guaranteed to succeed with lock held)</span>
+<span class="fc" id="L115">                    droppedCount.incrementAndGet();</span>
+<span class="fc" id="L116">                    log.trace(&quot;Queue full — dropped oldest tick, added {} {}&quot;,</span>
+<span class="fc" id="L117">                            StructuredArguments.keyValue(&quot;seq&quot;, tick.getSequenceNum()),</span>
+<span class="fc" id="L118">                            StructuredArguments.keyValue(&quot;event&quot;, &quot;tick_dropped&quot;));</span>
+                }
+<span class="fc" id="L120">            }</span>
+        }
+<span class="fc" id="L122">    }</span>
+
+    /**
+     * Consumer loop — runs on a dedicated daemon thread.
+     * Drains ticks one-at-a-time to preserve strict ordering.
+     * Uses poll with timeout to avoid busy-spinning when the queue is empty.
+     */
+    private void consumeLoop() {
+<span class="fc bfc" id="L130" title="All 2 branches covered.">        while (running) {</span>
+            try {
+<span class="fc" id="L132">                Tick tick = queue.poll(100, TimeUnit.MILLISECONDS);</span>
+<span class="fc bfc" id="L133" title="All 2 branches covered.">                if (tick != null) {</span>
+                    try {
+<span class="fc" id="L135">                        engine.onTick(tick);</span>
+<span class="fc" id="L136">                        totalProcessed.incrementAndGet();</span>
+<span class="nc" id="L137">                    } catch (Exception e) {</span>
+<span class="nc" id="L138">                        log.error(&quot;ValidatorEngine threw on tick {} {} {}&quot;,</span>
+<span class="nc" id="L139">                                StructuredArguments.keyValue(&quot;seq&quot;, tick.getSequenceNum()),</span>
+<span class="nc" id="L140">                                StructuredArguments.keyValue(&quot;event&quot;, &quot;validation_error&quot;),</span>
+<span class="nc" id="L141">                                StructuredArguments.keyValue(&quot;error&quot;, e.getMessage()), e);</span>
+                        // Don't stop consuming — one bad tick shouldn't kill the pipeline
+<span class="fc" id="L143">                    }</span>
+                }
+<span class="fc" id="L145">            } catch (InterruptedException e) {</span>
+<span class="fc" id="L146">                Thread.currentThread().interrupt();</span>
+<span class="fc" id="L147">                break;</span>
+<span class="fc" id="L148">            }</span>
+        }
+<span class="fc" id="L150">        log.info(&quot;BackpressureQueue consumer stopped&quot;);</span>
+<span class="fc" id="L151">    }</span>
+
+    // ── Metrics ─────────────────────────────────────────
+
+    /** Total ticks submitted to the queue (before any drops). */
+<span class="fc" id="L156">    public long getTotalSubmitted() { return totalSubmitted.get(); }</span>
+
+    /** Total ticks successfully processed by ValidatorEngine. */
+<span class="fc" id="L159">    public long getTotalProcessed() { return totalProcessed.get(); }</span>
+
+    /** Total ticks dropped due to backpressure. */
+<span class="fc" id="L162">    public long getDroppedCount() { return droppedCount.get(); }</span>
+
+    /** Current number of ticks waiting in the queue. */
+<span class="fc" id="L165">    public int getQueueSize() { return queue.size(); }</span>
+
+    /** Maximum capacity of the queue. */
+<span class="fc" id="L168">    public int getCapacity() { return queue.remainingCapacity() + queue.size(); }</span>
+
+    /** The active drop policy. */
+<span class="fc" id="L171">    public DropPolicy getDropPolicy() { return dropPolicy; }</span>
+
+    /** Whether the consumer thread is still running. */
+<span class="pc bpc" id="L174" title="1 of 4 branches missed.">    public boolean isRunning() { return running &amp;&amp; consumerThread.isAlive(); }</span>
+
+    // ── Lifecycle ───────────────────────────────────────
+
+    /** Gracefully stop the consumer thread. */
+    @PreDestroy
+    public void shutdown() {
+<span class="fc" id="L181">        running = false;</span>
+<span class="fc" id="L182">        consumerThread.interrupt();</span>
+<span class="fc" id="L183">        log.info(&quot;BackpressureQueue shutdown initiated&quot;);</span>
+<span class="fc" id="L184">    }</span>
+
+    /** Clear the queue and reset all metrics. */
+    public void reset() {
+<span class="fc" id="L188">        queue.clear();</span>
+<span class="fc" id="L189">        droppedCount.set(0);</span>
+<span class="fc" id="L190">        totalSubmitted.set(0);</span>
+<span class="fc" id="L191">        totalProcessed.set(0);</span>
+<span class="fc" id="L192">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

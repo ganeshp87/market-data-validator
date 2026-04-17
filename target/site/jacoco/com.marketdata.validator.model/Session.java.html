@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Session.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.model</a> &gt; <span class="el_source">Session.java</span></div><h1>Session.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.model;
+
+import java.time.Instant;
+
+/**
+ * A recording session — metadata for a batch of captured ticks.
+ * Maps to the `sessions` table in SQLite.
+ *
+ * Blueprint Section 5.1:
+ *   - id: auto-increment
+ *   - name: human label (&quot;btc-morning-session&quot;)
+ *   - feedId: which connection was recorded
+ *   - status: RECORDING → COMPLETED or FAILED
+ *   - startedAt / endedAt: time range
+ *   - tickCount / byteSize: stats
+ */
+public class Session {
+
+<span class="fc" id="L19">    public enum Status {</span>
+<span class="fc" id="L20">        RECORDING, COMPLETED, FAILED</span>
+    }
+
+    private long id;
+    private String name;
+    private String feedId;
+    private Status status;
+    private Instant startedAt;
+    private Instant endedAt; // null while recording
+    private long tickCount;
+    private long byteSize;
+
+<span class="fc" id="L32">    public Session() {</span>
+<span class="fc" id="L33">    }</span>
+
+<span class="fc" id="L35">    public Session(String name, String feedId) {</span>
+<span class="fc" id="L36">        this.name = name;</span>
+<span class="fc" id="L37">        this.feedId = feedId;</span>
+<span class="fc" id="L38">        this.status = Status.RECORDING;</span>
+<span class="fc" id="L39">        this.startedAt = Instant.now();</span>
+<span class="fc" id="L40">        this.tickCount = 0;</span>
+<span class="fc" id="L41">        this.byteSize = 0;</span>
+<span class="fc" id="L42">    }</span>
+
+    // --- Getters and Setters ---
+
+    public long getId() {
+<span class="fc" id="L47">        return id;</span>
+    }
+
+    public void setId(long id) {
+<span class="fc" id="L51">        this.id = id;</span>
+<span class="fc" id="L52">    }</span>
+
+    public String getName() {
+<span class="fc" id="L55">        return name;</span>
+    }
+
+    public void setName(String name) {
+<span class="fc" id="L59">        this.name = name;</span>
+<span class="fc" id="L60">    }</span>
+
+    public String getFeedId() {
+<span class="fc" id="L63">        return feedId;</span>
+    }
+
+    public void setFeedId(String feedId) {
+<span class="fc" id="L67">        this.feedId = feedId;</span>
+<span class="fc" id="L68">    }</span>
+
+    public Status getStatus() {
+<span class="fc" id="L71">        return status;</span>
+    }
+
+    public void setStatus(Status status) {
+<span class="fc" id="L75">        this.status = status;</span>
+<span class="fc" id="L76">    }</span>
+
+    public Instant getStartedAt() {
+<span class="fc" id="L79">        return startedAt;</span>
+    }
+
+    public void setStartedAt(Instant startedAt) {
+<span class="fc" id="L83">        this.startedAt = startedAt;</span>
+<span class="fc" id="L84">    }</span>
+
+    public Instant getEndedAt() {
+<span class="fc" id="L87">        return endedAt;</span>
+    }
+
+    public void setEndedAt(Instant endedAt) {
+<span class="fc" id="L91">        this.endedAt = endedAt;</span>
+<span class="fc" id="L92">    }</span>
+
+    public long getTickCount() {
+<span class="fc" id="L95">        return tickCount;</span>
+    }
+
+    public void setTickCount(long tickCount) {
+<span class="fc" id="L99">        this.tickCount = tickCount;</span>
+<span class="fc" id="L100">    }</span>
+
+    public long getByteSize() {
+<span class="fc" id="L103">        return byteSize;</span>
+    }
+
+    public void setByteSize(long byteSize) {
+<span class="fc" id="L107">        this.byteSize = byteSize;</span>
+<span class="fc" id="L108">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

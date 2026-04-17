@@ -1,0 +1,234 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SessionReplayer.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.session</a> &gt; <span class="el_source">SessionReplayer.java</span></div><h1>SessionReplayer.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.session;
+
+import com.marketdata.validator.model.Session;
+import com.marketdata.validator.model.Tick;
+import com.marketdata.validator.model.ValidationResult;
+import com.marketdata.validator.store.SessionStore;
+import com.marketdata.validator.store.TickStore;
+import com.marketdata.validator.validator.ValidatorEngine;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
+
+/**
+ * Replays a recorded session's ticks through the ValidatorEngine at configurable speed.
+ * Preserves original inter-tick timing gaps scaled by speed factor.
+ */
+@Component
+public class SessionReplayer {
+
+<span class="fc" id="L26">    private static final Logger log = LoggerFactory.getLogger(SessionReplayer.class);</span>
+    private static final double MAX_REPLAY_SPEED = 1000.0;
+
+<span class="fc" id="L29">    public enum State { IDLE, REPLAYING, PAUSED, COMPLETED, FAILED }</span>
+
+    private final TickStore tickStore;
+    private final SessionStore sessionStore;
+    private final ValidatorEngine engine;
+
+<span class="fc" id="L35">    private volatile State state = State.IDLE;</span>
+<span class="fc" id="L36">    private volatile double speedFactor = 1.0;</span>
+    private volatile long replaySessionId;
+<span class="fc" id="L38">    private final AtomicInteger ticksReplayed = new AtomicInteger(0);</span>
+    private volatile int totalTicks;
+
+    private Thread replayThread;
+<span class="fc" id="L42">    private final Object pauseLock = new Object();</span>
+    private volatile Consumer&lt;ReplayProgress&gt; progressListener;
+
+<span class="fc" id="L45">    public SessionReplayer(TickStore tickStore, SessionStore sessionStore, ValidatorEngine engine) {</span>
+<span class="fc" id="L46">        this.tickStore = tickStore;</span>
+<span class="fc" id="L47">        this.sessionStore = sessionStore;</span>
+<span class="fc" id="L48">        this.engine = engine;</span>
+<span class="fc" id="L49">    }</span>
+
+<span class="fc" id="L51">    public record ReplayProgress(State state, int ticksReplayed, int totalTicks, double speedFactor) {}</span>
+
+    /**
+     * Thrown by {@link #replaySync} when the engine raises an exception mid-replay.
+     * Carries the number of ticks processed before the failure and the failing tick's symbol.
+     */
+    public static class ReplayException extends RuntimeException {
+        private final int ticksProcessed;
+        private final String failingSymbol;
+
+        public ReplayException(String message, int ticksProcessed, String failingSymbol, Throwable cause) {
+<span class="fc" id="L62">            super(message, cause);</span>
+<span class="fc" id="L63">            this.ticksProcessed = ticksProcessed;</span>
+<span class="fc" id="L64">            this.failingSymbol = failingSymbol;</span>
+<span class="fc" id="L65">        }</span>
+
+<span class="fc" id="L67">        public int getTicksProcessed() { return ticksProcessed; }</span>
+<span class="fc" id="L68">        public String getFailingSymbol() { return failingSymbol; }</span>
+    }
+
+    /**
+     * Synchronous replay for REST callers: validates speed, resets the engine, and
+     * feeds every tick to the engine in the calling thread (no background thread).
+     *
+     * @param sessionId session to replay
+     * @param speed     replay speed factor; must be in (0, 1000]
+     * @return the full list of ticks replayed
+     * @throws IllegalArgumentException if speed is out of range
+     * @throws ReplayException          if the engine throws while processing a tick
+     */
+    public List&lt;Tick&gt; replaySync(long sessionId, double speed) {
+<span class="nc bnc" id="L82" title="All 4 branches missed.">        if (speed &lt;= 0 || speed &gt; MAX_REPLAY_SPEED) {</span>
+<span class="nc" id="L83">            throw new IllegalArgumentException(</span>
+                    &quot;Replay speed must be between 0 and 1000. Use speed=1000 for maximum fast-forward.&quot;);
+        }
+
+<span class="nc" id="L87">        List&lt;Tick&gt; ticks = tickStore.findBySessionId(sessionId);</span>
+<span class="nc" id="L88">        engine.reset();</span>
+
+<span class="nc" id="L90">        int processed = 0;</span>
+        try {
+<span class="nc bnc" id="L92" title="All 2 branches missed.">            for (Tick tick : ticks) {</span>
+<span class="nc" id="L93">                engine.onTick(tick);</span>
+<span class="nc" id="L94">                processed++;</span>
+<span class="nc" id="L95">            }</span>
+<span class="nc" id="L96">        } catch (Exception e) {</span>
+<span class="nc bnc" id="L97" title="All 2 branches missed.">            Tick failingTick = processed &lt; ticks.size() ? ticks.get(processed) : null;</span>
+<span class="nc bnc" id="L98" title="All 2 branches missed.">            String failingSymbol = failingTick != null ? failingTick.getFeedScopedSymbol() : &quot;unknown&quot;;</span>
+<span class="nc" id="L99">            engine.reset();</span>
+<span class="nc" id="L100">            throw new ReplayException(e.getMessage(), processed, failingSymbol, e);</span>
+<span class="nc" id="L101">        }</span>
+
+<span class="nc" id="L103">        return ticks;</span>
+    }
+
+    public void start(long sessionId, double speed) {
+<span class="fc bfc" id="L107" title="All 4 branches covered.">        if (state == State.REPLAYING || state == State.PAUSED) {</span>
+<span class="fc" id="L108">            throw new IllegalStateException(&quot;Replay already in progress&quot;);</span>
+        }
+<span class="fc bfc" id="L110" title="All 4 branches covered.">        if (speed &lt;= 0 || speed &gt; MAX_REPLAY_SPEED) {</span>
+<span class="fc" id="L111">            throw new IllegalArgumentException(</span>
+                    &quot;Replay speed must be between 0 and 1000. Use speed=1000 for maximum fast-forward.&quot;);
+        }
+
+<span class="fc" id="L115">        Session session = sessionStore.findById(sessionId)</span>
+<span class="fc" id="L116">                .orElseThrow(() -&gt; new IllegalArgumentException(&quot;Session not found: &quot; + sessionId));</span>
+<span class="fc bfc" id="L117" title="All 2 branches covered.">        if (session.getStatus() != Session.Status.COMPLETED) {</span>
+<span class="fc" id="L118">            throw new IllegalArgumentException(&quot;Can only replay completed sessions&quot;);</span>
+        }
+
+<span class="fc" id="L121">        List&lt;Tick&gt; ticks = tickStore.findBySessionId(sessionId);</span>
+<span class="fc bfc" id="L122" title="All 2 branches covered.">        if (ticks.isEmpty()) {</span>
+<span class="fc" id="L123">            throw new IllegalArgumentException(&quot;Session has no ticks&quot;);</span>
+        }
+
+<span class="fc" id="L126">        this.replaySessionId = sessionId;</span>
+<span class="fc" id="L127">        this.speedFactor = speed;</span>
+<span class="fc" id="L128">        this.totalTicks = ticks.size();</span>
+<span class="fc" id="L129">        this.ticksReplayed.set(0);</span>
+
+<span class="fc" id="L131">        engine.reset();</span>
+<span class="fc" id="L132">        state = State.REPLAYING;</span>
+
+<span class="fc" id="L134">        replayThread = new Thread(() -&gt; replayLoop(ticks), &quot;session-replayer&quot;);</span>
+<span class="fc" id="L135">        replayThread.setDaemon(true);</span>
+<span class="fc" id="L136">        replayThread.start();</span>
+<span class="fc" id="L137">    }</span>
+
+    private void replayLoop(List&lt;Tick&gt; ticks) {
+        try {
+<span class="fc" id="L141">            Instant prevTs = null;</span>
+
+<span class="fc bfc" id="L143" title="All 2 branches covered.">            for (Tick tick : ticks) {</span>
+<span class="fc bfc" id="L144" title="All 2 branches covered.">                if (state == State.IDLE) break;</span>
+
+<span class="fc" id="L146">                synchronized (pauseLock) {</span>
+<span class="fc bfc" id="L147" title="All 2 branches covered.">                    while (state == State.PAUSED) {</span>
+<span class="fc" id="L148">                        pauseLock.wait();</span>
+                    }
+<span class="fc" id="L150">                }</span>
+<span class="fc bfc" id="L151" title="All 2 branches covered.">                if (state == State.IDLE) break;</span>
+
+                // Respect inter-tick timing scaled by speed factor
+<span class="pc bpc" id="L154" title="1 of 4 branches missed.">                if (prevTs != null &amp;&amp; tick.getExchangeTimestamp() != null) {</span>
+<span class="fc" id="L155">                    long gapMs = Duration.between(prevTs, tick.getExchangeTimestamp()).toMillis();</span>
+<span class="fc bfc" id="L156" title="All 2 branches covered.">                    if (gapMs &gt; 0) {</span>
+<span class="fc" id="L157">                        long sleepMs = (long) (gapMs / speedFactor);</span>
+<span class="fc bfc" id="L158" title="All 2 branches covered.">                        if (sleepMs &gt; 0) {</span>
+<span class="fc" id="L159">                            Thread.sleep(sleepMs);</span>
+                        }
+                    }
+                }
+
+<span class="fc" id="L164">                engine.onTick(tick);</span>
+<span class="fc" id="L165">                ticksReplayed.incrementAndGet();</span>
+<span class="fc" id="L166">                prevTs = tick.getExchangeTimestamp();</span>
+
+<span class="fc" id="L168">                notifyProgress();</span>
+<span class="fc" id="L169">            }</span>
+
+<span class="fc bfc" id="L171" title="All 2 branches covered.">            if (state == State.REPLAYING) {</span>
+<span class="fc" id="L172">                state = State.COMPLETED;</span>
+<span class="fc" id="L173">                notifyProgress();</span>
+            }
+<span class="fc" id="L175">        } catch (InterruptedException e) {</span>
+<span class="fc" id="L176">            Thread.currentThread().interrupt();</span>
+<span class="pc bpc" id="L177" title="1 of 2 branches missed.">            if (state != State.IDLE) {</span>
+<span class="nc" id="L178">                state = State.FAILED;</span>
+            }
+<span class="fc" id="L180">        }</span>
+<span class="fc" id="L181">    }</span>
+
+    public void pause() {
+<span class="fc bfc" id="L184" title="All 2 branches covered.">        if (state == State.REPLAYING) {</span>
+<span class="fc" id="L185">            state = State.PAUSED;</span>
+        }
+<span class="fc" id="L187">    }</span>
+
+    public void resume() {
+<span class="fc bfc" id="L190" title="All 2 branches covered.">        if (state == State.PAUSED) {</span>
+<span class="fc" id="L191">            state = State.REPLAYING;</span>
+<span class="fc" id="L192">            synchronized (pauseLock) {</span>
+<span class="fc" id="L193">                pauseLock.notifyAll();</span>
+<span class="fc" id="L194">            }</span>
+        }
+<span class="fc" id="L196">    }</span>
+
+    public void stop() {
+<span class="fc" id="L199">        state = State.IDLE;</span>
+<span class="fc" id="L200">        synchronized (pauseLock) {</span>
+<span class="fc" id="L201">            pauseLock.notifyAll();</span>
+<span class="fc" id="L202">        }</span>
+<span class="fc bfc" id="L203" title="All 2 branches covered.">        if (replayThread != null) {</span>
+<span class="fc" id="L204">            replayThread.interrupt();</span>
+        }
+<span class="fc" id="L206">    }</span>
+
+    public void setSpeed(double speed) {
+<span class="fc bfc" id="L209" title="All 4 branches covered.">        if (speed &lt;= 0 || speed &gt; MAX_REPLAY_SPEED) {</span>
+<span class="fc" id="L210">            throw new IllegalArgumentException(</span>
+                    &quot;Replay speed must be between 0 and 1000. Use speed=1000 for maximum fast-forward.&quot;);
+        }
+<span class="fc" id="L213">        this.speedFactor = speed;</span>
+<span class="fc" id="L214">    }</span>
+
+<span class="fc" id="L216">    public State getState() { return state; }</span>
+<span class="fc" id="L217">    public int getTicksReplayed() { return ticksReplayed.get(); }</span>
+<span class="fc" id="L218">    public int getTotalTicks() { return totalTicks; }</span>
+<span class="fc" id="L219">    public double getSpeedFactor() { return speedFactor; }</span>
+<span class="fc" id="L220">    public long getReplaySessionId() { return replaySessionId; }</span>
+<span class="fc" id="L221">    public List&lt;ValidationResult&gt; getResults() { return engine.getResults(); }</span>
+
+    public void setProgressListener(Consumer&lt;ReplayProgress&gt; listener) {
+<span class="fc" id="L224">        this.progressListener = listener;</span>
+<span class="fc" id="L225">    }</span>
+
+    private void notifyProgress() {
+<span class="fc" id="L228">        Consumer&lt;ReplayProgress&gt; listener = this.progressListener;</span>
+<span class="fc bfc" id="L229" title="All 2 branches covered.">        if (listener != null) {</span>
+<span class="fc" id="L230">            listener.accept(new ReplayProgress(state, ticksReplayed.get(), totalTicks, speedFactor));</span>
+        }
+<span class="fc" id="L232">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

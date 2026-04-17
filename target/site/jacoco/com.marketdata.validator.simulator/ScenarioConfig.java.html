@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ScenarioConfig.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.simulator</a> &gt; <span class="el_source">ScenarioConfig.java</span></div><h1>ScenarioConfig.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.simulator;
+
+import java.time.LocalDate;
+
+/**
+ * Runtime configuration for the LVWR_T chaos simulator.
+ *
+ * Blueprint QE Section 2 — ScenarioConfig.
+ * Mutated at runtime via PUT /api/simulator/config.
+ */
+public class ScenarioConfig {
+
+<span class="fc" id="L13">    private SimulatorMode mode = SimulatorMode.CLEAN;</span>
+    private FailureType targetScenario;     // Only used in SCENARIO mode
+<span class="fc" id="L15">    private double failureRate = 0.10;      // 0.0–1.0; default 10% for NOISY</span>
+<span class="fc" id="L16">    private int numTrades = 0;              // Total trade rows to generate (0 = unlimited)</span>
+<span class="fc" id="L17">    private LocalDate tradeDate = LocalDate.now();</span>
+<span class="fc" id="L18">    private boolean includeHeartbeats = true;</span>
+<span class="fc" id="L19">    private int ticksPerSecond = 50;        // Throughput throttle</span>
+<span class="fc" id="L20">    private long disconnectDurationMs = 8_000L;   // How long DISCONNECT failure pauses emission</span>
+<span class="fc" id="L21">    private long reconnectPauseDurationMs = 500L; // Brief pause per RECONNECT_STORM event</span>
+
+<span class="fc" id="L23">    public ScenarioConfig() {}</span>
+
+<span class="fc" id="L25">    public SimulatorMode getMode() { return mode; }</span>
+<span class="fc" id="L26">    public void setMode(SimulatorMode mode) { this.mode = mode; }</span>
+
+<span class="fc" id="L28">    public FailureType getTargetScenario() { return targetScenario; }</span>
+<span class="fc" id="L29">    public void setTargetScenario(FailureType targetScenario) { this.targetScenario = targetScenario; }</span>
+
+<span class="fc" id="L31">    public double getFailureRate() { return failureRate; }</span>
+<span class="fc" id="L32">    public void setFailureRate(double failureRate) { this.failureRate = Math.max(0.0, Math.min(1.0, failureRate)); }</span>
+
+<span class="fc" id="L34">    public int getNumTrades() { return numTrades; }</span>
+<span class="fc" id="L35">    public void setNumTrades(int numTrades) { this.numTrades = numTrades; }</span>
+
+<span class="nc" id="L37">    public LocalDate getTradeDate() { return tradeDate; }</span>
+<span class="nc" id="L38">    public void setTradeDate(LocalDate tradeDate) { this.tradeDate = tradeDate; }</span>
+
+<span class="fc" id="L40">    public boolean isIncludeHeartbeats() { return includeHeartbeats; }</span>
+<span class="fc" id="L41">    public void setIncludeHeartbeats(boolean includeHeartbeats) { this.includeHeartbeats = includeHeartbeats; }</span>
+
+<span class="fc" id="L43">    public int getTicksPerSecond() { return ticksPerSecond; }</span>
+<span class="fc" id="L44">    public void setTicksPerSecond(int ticksPerSecond) { this.ticksPerSecond = Math.max(1, Math.min(1000, ticksPerSecond)); }</span>
+
+<span class="fc" id="L46">    public long getDisconnectDurationMs() { return disconnectDurationMs; }</span>
+<span class="fc" id="L47">    public void setDisconnectDurationMs(long disconnectDurationMs) { this.disconnectDurationMs = Math.max(0, disconnectDurationMs); }</span>
+
+<span class="fc" id="L49">    public long getReconnectPauseDurationMs() { return reconnectPauseDurationMs; }</span>
+<span class="fc" id="L50">    public void setReconnectPauseDurationMs(long reconnectPauseDurationMs) { this.reconnectPauseDurationMs = Math.max(0, reconnectPauseDurationMs); }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

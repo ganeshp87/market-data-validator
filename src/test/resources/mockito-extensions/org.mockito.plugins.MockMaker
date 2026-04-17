@@ -1,0 +1,1 @@
+# Use default inline mock maker (Mockito 5.x default, works with Java 21+)

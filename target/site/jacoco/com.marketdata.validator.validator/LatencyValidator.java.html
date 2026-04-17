@@ -1,0 +1,296 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>LatencyValidator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.validator</a> &gt; <span class="el_source">LatencyValidator.java</span></div><h1>LatencyValidator.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.validator;
+
+import com.marketdata.validator.model.Tick;
+import com.marketdata.validator.model.ValidationResult;
+import com.marketdata.validator.model.ValidationResult.Area;
+import com.marketdata.validator.model.ValidationResult.Status;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
+
+import java.util.Arrays;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
+
+/**
+ * Tracks end-to-end latency percentiles with spike detection.
+ *
+ * Blueprint Section 9.2:
+ *   - Circular buffer of last 10,000 latency samples
+ *   - Percentile calculation: p50, p95, p99, min, max
+ *   - Spike detection: latency &gt; p99 * 3
+ *
+ * Result thresholds:
+ *   PASS: p95 &lt; threshold (500ms) AND spikeCount &lt; 5
+ *   WARN: p95 &lt; threshold * 2 OR spikeCount &gt;= 5
+ *   FAIL: p95 &gt;= threshold * 2 OR spikeCount &gt;= 20
+ */
+@Component
+public class LatencyValidator implements Validator {
+
+<span class="fc" id="L33">    private static final Logger log = LoggerFactory.getLogger(LatencyValidator.class);</span>
+    private static final int DEFAULT_BUFFER_SIZE = 10_000;
+    private static final long DEFAULT_THRESHOLD_MS = 500;
+    private static final int SPIKE_WARN_THRESHOLD = 5;
+    private static final int SPIKE_FAIL_THRESHOLD = 20;
+
+    // Circular buffer for O(1) insertion, bounded memory
+    private long[] buffer;
+    private int writeIndex;
+    private int count;
+<span class="fc" id="L43">    private final ReentrantLock bufferLock = new ReentrantLock();</span>
+
+    // Per-symbol idempotency
+<span class="fc" id="L46">    private final Map&lt;String, Long&gt; lastSequenceBySymbol = new ConcurrentHashMap&lt;&gt;();</span>
+
+    // Aggregate counters
+<span class="fc" id="L49">    private final AtomicLong totalTicks = new AtomicLong(0);</span>
+<span class="fc" id="L50">    private final AtomicLong spikeCount = new AtomicLong(0);</span>
+<span class="fc" id="L51">    private long minLatency = Long.MAX_VALUE;</span>
+<span class="fc" id="L52">    private long maxLatency = Long.MIN_VALUE;</span>
+
+    // Configurable
+<span class="fc" id="L55">    private long thresholdMs = DEFAULT_THRESHOLD_MS;</span>
+<span class="fc" id="L56">    private int bufferSize = DEFAULT_BUFFER_SIZE;</span>
+
+<span class="fc" id="L58">    public LatencyValidator() {</span>
+<span class="fc" id="L59">        this.buffer = new long[DEFAULT_BUFFER_SIZE];</span>
+<span class="fc" id="L60">        this.writeIndex = 0;</span>
+<span class="fc" id="L61">        this.count = 0;</span>
+<span class="fc" id="L62">    }</span>
+
+    @Override
+    public String getArea() {
+<span class="fc" id="L66">        return Area.LATENCY.name();</span>
+    }
+
+    @Override
+    public void onTick(Tick tick) {
+        // Idempotent: skip already-processed sequence numbers
+<span class="fc" id="L72">        Long lastSeq = lastSequenceBySymbol.get(tick.getSymbol());</span>
+<span class="fc bfc" id="L73" title="All 4 branches covered.">        if (lastSeq != null &amp;&amp; tick.getSequenceNum() &lt;= lastSeq) {</span>
+<span class="fc" id="L74">            return;</span>
+        }
+
+<span class="fc" id="L77">        long latencyMs = tick.getLatencyMs();</span>
+
+<span class="fc" id="L79">        totalTicks.incrementAndGet();</span>
+
+<span class="fc" id="L81">        bufferLock.lock();</span>
+        try {
+            // Add to circular buffer
+<span class="fc" id="L84">            buffer[writeIndex] = latencyMs;</span>
+<span class="fc" id="L85">            writeIndex = (writeIndex + 1) % bufferSize;</span>
+<span class="fc bfc" id="L86" title="All 2 branches covered.">            if (count &lt; bufferSize) {</span>
+<span class="fc" id="L87">                count++;</span>
+            }
+
+            // Track min/max
+<span class="fc bfc" id="L91" title="All 2 branches covered.">            if (latencyMs &lt; minLatency) {</span>
+<span class="fc" id="L92">                minLatency = latencyMs;</span>
+            }
+<span class="fc bfc" id="L94" title="All 2 branches covered.">            if (latencyMs &gt; maxLatency) {</span>
+<span class="fc" id="L95">                maxLatency = latencyMs;</span>
+            }
+
+            // Spike detection: latency &gt; p99 * 3
+<span class="fc bfc" id="L99" title="All 2 branches covered.">            if (count &gt;= 100) { // Need minimum samples for meaningful p99</span>
+<span class="fc" id="L100">                long currentP99 = calculatePercentile(99);</span>
+<span class="fc bfc" id="L101" title="All 2 branches covered.">                if (latencyMs &gt; currentP99 * 3) {</span>
+<span class="fc" id="L102">                    spikeCount.incrementAndGet();</span>
+<span class="fc" id="L103">                    log.debug(&quot;Latency spike: {}ms &gt; 3×p99({}ms) for symbol={}&quot;,</span>
+<span class="fc" id="L104">                            latencyMs, currentP99, tick.getSymbol());</span>
+                }
+            }
+        } finally {
+<span class="fc" id="L108">            bufferLock.unlock();</span>
+        }
+
+<span class="fc" id="L111">        lastSequenceBySymbol.put(tick.getSymbol(), tick.getSequenceNum());</span>
+<span class="fc" id="L112">    }</span>
+
+    @Override
+    public ValidationResult getResult() {
+<span class="fc bfc" id="L116" title="All 2 branches covered.">        if (totalTicks.get() == 0) {</span>
+<span class="fc" id="L117">            return ValidationResult.pass(Area.LATENCY,</span>
+                    &quot;No ticks processed yet&quot;, 0.0, thresholdMs);
+        }
+
+        long p50, p95, p99;
+        long min, max;
+        int currentCount;
+
+<span class="fc" id="L125">        bufferLock.lock();</span>
+        try {
+<span class="fc" id="L127">            p50 = calculatePercentile(50);</span>
+<span class="fc" id="L128">            p95 = calculatePercentile(95);</span>
+<span class="fc" id="L129">            p99 = calculatePercentile(99);</span>
+<span class="fc" id="L130">            min = minLatency;</span>
+<span class="fc" id="L131">            max = maxLatency;</span>
+<span class="fc" id="L132">            currentCount = count;</span>
+        } finally {
+<span class="fc" id="L134">            bufferLock.unlock();</span>
+        }
+
+<span class="fc" id="L137">        long spikes = spikeCount.get();</span>
+
+        Status status;
+<span class="fc bfc" id="L140" title="All 4 branches covered.">        if (p95 &gt;= thresholdMs * 2 || spikes &gt;= SPIKE_FAIL_THRESHOLD) {</span>
+<span class="fc" id="L141">            status = Status.FAIL;</span>
+<span class="pc bpc" id="L142" title="1 of 4 branches missed.">        } else if (p95 &gt;= thresholdMs || spikes &gt;= SPIKE_WARN_THRESHOLD) {</span>
+<span class="fc" id="L143">            status = Status.WARN;</span>
+        } else {
+<span class="fc" id="L145">            status = Status.PASS;</span>
+        }
+
+<span class="fc" id="L148">        String message = String.format(</span>
+                &quot;p50=%dms p95=%dms p99=%dms min=%dms max=%dms spikes=%d (threshold=%dms, samples=%d)&quot;,
+<span class="fc" id="L150">                p50, p95, p99, min, max, spikes, thresholdMs, currentCount);</span>
+
+<span class="fc" id="L152">        ValidationResult result = new ValidationResult(Area.LATENCY, status,</span>
+                message, p95, thresholdMs);
+<span class="fc" id="L154">        result.getDetails().put(&quot;p50&quot;, p50);</span>
+<span class="fc" id="L155">        result.getDetails().put(&quot;p95&quot;, p95);</span>
+<span class="fc" id="L156">        result.getDetails().put(&quot;p99&quot;, p99);</span>
+<span class="fc" id="L157">        result.getDetails().put(&quot;min&quot;, min);</span>
+<span class="fc" id="L158">        result.getDetails().put(&quot;max&quot;, max);</span>
+<span class="fc" id="L159">        result.getDetails().put(&quot;spikeCount&quot;, spikes);</span>
+<span class="fc" id="L160">        result.getDetails().put(&quot;totalTicks&quot;, totalTicks.get());</span>
+<span class="fc" id="L161">        result.getDetails().put(&quot;bufferSamples&quot;, currentCount);</span>
+
+<span class="fc" id="L163">        return result;</span>
+    }
+
+    @Override
+    public void reset() {
+<span class="fc" id="L168">        bufferLock.lock();</span>
+        try {
+<span class="fc" id="L170">            buffer = new long[bufferSize];</span>
+<span class="fc" id="L171">            writeIndex = 0;</span>
+<span class="fc" id="L172">            count = 0;</span>
+<span class="fc" id="L173">            minLatency = Long.MAX_VALUE;</span>
+<span class="fc" id="L174">            maxLatency = Long.MIN_VALUE;</span>
+        } finally {
+<span class="fc" id="L176">            bufferLock.unlock();</span>
+        }
+<span class="fc" id="L178">        lastSequenceBySymbol.clear();</span>
+<span class="fc" id="L179">        totalTicks.set(0);</span>
+<span class="fc" id="L180">        spikeCount.set(0);</span>
+<span class="fc" id="L181">    }</span>
+
+    @Override
+    public void configure(Map&lt;String, Object&gt; config) {
+<span class="fc bfc" id="L185" title="All 2 branches covered.">        if (config.containsKey(&quot;thresholdMs&quot;)) {</span>
+<span class="fc" id="L186">            thresholdMs = ((Number) config.get(&quot;thresholdMs&quot;)).longValue();</span>
+        }
+<span class="fc bfc" id="L188" title="All 2 branches covered.">        if (config.containsKey(&quot;bufferSize&quot;)) {</span>
+<span class="fc" id="L189">            bufferSize = ((Number) config.get(&quot;bufferSize&quot;)).intValue();</span>
+<span class="fc" id="L190">            bufferLock.lock();</span>
+            try {
+<span class="fc" id="L192">                buffer = new long[bufferSize];</span>
+<span class="fc" id="L193">                writeIndex = 0;</span>
+<span class="fc" id="L194">                count = 0;</span>
+            } finally {
+<span class="fc" id="L196">                bufferLock.unlock();</span>
+            }
+        }
+<span class="fc" id="L199">    }</span>
+
+    /**
+     * Calculates the given percentile from the circular buffer.
+     * Must be called while holding bufferLock.
+     *
+     * Copies only the filled portion of the buffer, sorts it,
+     * and returns the value at the percentile index.
+     */
+    private long calculatePercentile(int percentile) {
+<span class="pc bpc" id="L209" title="1 of 2 branches missed.">        if (count == 0) {</span>
+<span class="nc" id="L210">            return 0;</span>
+        }
+
+<span class="fc" id="L213">        long[] sorted = new long[count];</span>
+<span class="fc bfc" id="L214" title="All 2 branches covered.">        if (count &lt; bufferSize) {</span>
+<span class="fc" id="L215">            System.arraycopy(buffer, 0, sorted, 0, count);</span>
+        } else {
+<span class="fc" id="L217">            System.arraycopy(buffer, 0, sorted, 0, bufferSize);</span>
+        }
+<span class="fc" id="L219">        Arrays.sort(sorted);</span>
+
+        // Standard linear interpolation: pos = percentile/100 * (count-1).
+        // Exact when pos is a whole number; interpolated between adjacent values otherwise.
+        // More accurate than ceil-based indexing for small sample buffers.
+        // Formula: result = lower + (pos - floor(pos)) * (upper - lower)
+<span class="fc" id="L225">        double pos = (percentile / 100.0) * (count - 1);</span>
+<span class="fc" id="L226">        int lo = (int) Math.floor(pos);</span>
+<span class="fc" id="L227">        int hi = (int) Math.ceil(pos);</span>
+<span class="pc bpc" id="L228" title="1 of 2 branches missed.">        if (hi &gt;= count) hi = count - 1;</span>
+<span class="fc" id="L229">        return (long) (sorted[lo] + (pos - lo) * (sorted[hi] - sorted[lo]));</span>
+    }
+
+    // --- Visible for testing ---
+
+    long getTotalTicks() {
+<span class="fc" id="L235">        return totalTicks.get();</span>
+    }
+
+    long getSpikeCount() {
+<span class="fc" id="L239">        return spikeCount.get();</span>
+    }
+
+    long getP50() {
+<span class="fc" id="L243">        bufferLock.lock();</span>
+        try {
+<span class="fc" id="L245">            return calculatePercentile(50);</span>
+        } finally {
+<span class="fc" id="L247">            bufferLock.unlock();</span>
+        }
+    }
+
+    long getP95() {
+<span class="fc" id="L252">        bufferLock.lock();</span>
+        try {
+<span class="fc" id="L254">            return calculatePercentile(95);</span>
+        } finally {
+<span class="fc" id="L256">            bufferLock.unlock();</span>
+        }
+    }
+
+    long getP99() {
+<span class="fc" id="L261">        bufferLock.lock();</span>
+        try {
+<span class="fc" id="L263">            return calculatePercentile(99);</span>
+        } finally {
+<span class="fc" id="L265">            bufferLock.unlock();</span>
+        }
+    }
+
+    long getMinLatency() {
+<span class="fc" id="L270">        bufferLock.lock();</span>
+        try {
+<span class="fc" id="L272">            return minLatency;</span>
+        } finally {
+<span class="fc" id="L274">            bufferLock.unlock();</span>
+        }
+    }
+
+    long getMaxLatency() {
+<span class="fc" id="L279">        bufferLock.lock();</span>
+        try {
+<span class="fc" id="L281">            return maxLatency;</span>
+        } finally {
+<span class="fc" id="L283">            bufferLock.unlock();</span>
+        }
+    }
+
+    int getBufferCount() {
+<span class="fc" id="L288">        bufferLock.lock();</span>
+        try {
+<span class="fc" id="L290">            return count;</span>
+        } finally {
+<span class="fc" id="L292">            bufferLock.unlock();</span>
+        }
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ReconnectionValidator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.validator</a> &gt; <span class="el_source">ReconnectionValidator.java</span></div><h1>ReconnectionValidator.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.validator;
+
+import com.marketdata.validator.model.Tick;
+import com.marketdata.validator.model.ValidationResult;
+import com.marketdata.validator.model.ValidationResult.Area;
+import com.marketdata.validator.model.ValidationResult.Status;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.stereotype.Component;
+
+import java.time.Duration;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
+
+/**
+ * Validates connection resilience by tracking reconnection events.
+ *
+ * Blueprint Section 9.4:
+ *   - Tracks disconnect/reconnect counts
+ *   - Measures reconnection durations
+ *   - Detects failed reconnects and subscription restoration
+ *
+ * Result thresholds:
+ *   PASS: reconnectCount == disconnectCount AND avg(reconnectTimes) &lt; 5s
+ *   WARN: reconnectCount &lt; disconnectCount OR avg(reconnectTimes) &gt; 5s
+ *   FAIL: failedReconnects &gt; 0
+ *
+ * Note: This validator is event-driven, not tick-driven.
+ * onTick() is a no-op. Connection events are reported via dedicated methods.
+ */
+@Component
+<span class="fc" id="L35">public class ReconnectionValidator implements Validator {</span>
+
+<span class="fc" id="L37">    private static final Logger log = LoggerFactory.getLogger(ReconnectionValidator.class);</span>
+    private static final long DEFAULT_RECONNECT_THRESHOLD_MS = 5_000; // 5 seconds
+
+<span class="fc" id="L40">    private final AtomicLong disconnectCount = new AtomicLong(0);</span>
+<span class="fc" id="L41">    private final AtomicLong reconnectCount = new AtomicLong(0);</span>
+<span class="fc" id="L42">    private final AtomicLong failedReconnects = new AtomicLong(0);</span>
+<span class="fc" id="L43">    private final AtomicLong subscriptionRestorations = new AtomicLong(0);</span>
+<span class="fc" id="L44">    private final List&lt;Long&gt; reconnectTimesMs = new CopyOnWriteArrayList&lt;&gt;();</span>
+
+<span class="fc" id="L46">    private long reconnectThresholdMs = DEFAULT_RECONNECT_THRESHOLD_MS;</span>
+
+    @Override
+    public String getArea() {
+<span class="fc" id="L50">        return Area.RECONNECTION.name();</span>
+    }
+
+    /**
+     * Ticks don't drive this validator — connection events do.
+     * onTick is a no-op to satisfy the Validator interface.
+     */
+    @Override
+    public void onTick(Tick tick) {
+        // No-op: reconnection validation is event-driven, not tick-driven
+<span class="fc" id="L60">    }</span>
+
+    /**
+     * Record a connection disconnect event.
+     */
+    public void onDisconnect(String connectionId) {
+<span class="fc" id="L66">        disconnectCount.incrementAndGet();</span>
+<span class="fc" id="L67">        log.debug(&quot;Disconnect recorded for connection={}&quot;, connectionId);</span>
+<span class="fc" id="L68">    }</span>
+
+    /**
+     * Record a successful reconnection with the time it took.
+     */
+    public void onReconnect(String connectionId, Duration reconnectTime) {
+<span class="fc" id="L74">        reconnectCount.incrementAndGet();</span>
+<span class="fc" id="L75">        reconnectTimesMs.add(reconnectTime.toMillis());</span>
+<span class="fc" id="L76">        log.debug(&quot;Reconnect recorded for connection={} took={}ms&quot;,</span>
+<span class="fc" id="L77">                connectionId, reconnectTime.toMillis());</span>
+<span class="fc" id="L78">    }</span>
+
+    /**
+     * Record a failed reconnection attempt (max retries exhausted).
+     */
+    public void onReconnectFailed(String connectionId) {
+<span class="fc" id="L84">        failedReconnects.incrementAndGet();</span>
+<span class="fc" id="L85">        log.warn(&quot;Reconnect FAILED for connection={}&quot;, connectionId);</span>
+<span class="fc" id="L86">    }</span>
+
+    /**
+     * Record that subscriptions were successfully restored after reconnect.
+     */
+    public void onSubscriptionRestored(String connectionId) {
+<span class="fc" id="L92">        subscriptionRestorations.incrementAndGet();</span>
+<span class="fc" id="L93">        log.debug(&quot;Subscriptions restored for connection={}&quot;, connectionId);</span>
+<span class="fc" id="L94">    }</span>
+
+    @Override
+    public ValidationResult getResult() {
+<span class="fc" id="L98">        long disconnects = disconnectCount.get();</span>
+<span class="fc" id="L99">        long reconnects = reconnectCount.get();</span>
+<span class="fc" id="L100">        long failed = failedReconnects.get();</span>
+<span class="fc" id="L101">        long restored = subscriptionRestorations.get();</span>
+
+<span class="pc bpc" id="L103" title="2 of 6 branches missed.">        if (disconnects == 0 &amp;&amp; reconnects == 0 &amp;&amp; failed == 0) {</span>
+<span class="fc" id="L104">            return ValidationResult.pass(Area.RECONNECTION,</span>
+                    &quot;No connection events yet&quot;, 100.0, reconnectThresholdMs);
+        }
+
+<span class="fc bfc" id="L108" title="All 2 branches covered.">        double avgReconnectMs = reconnectTimesMs.isEmpty() ? 0.0 :</span>
+<span class="fc" id="L109">                reconnectTimesMs.stream().mapToLong(Long::longValue).average().orElse(0.0);</span>
+
+        Status status;
+<span class="fc bfc" id="L112" title="All 2 branches covered.">        if (failed &gt; 0) {</span>
+<span class="fc" id="L113">            status = Status.FAIL;</span>
+<span class="fc bfc" id="L114" title="All 4 branches covered.">        } else if (reconnects &lt; disconnects || avgReconnectMs &gt; reconnectThresholdMs) {</span>
+<span class="fc" id="L115">            status = Status.WARN;</span>
+        } else {
+<span class="fc" id="L117">            status = Status.PASS;</span>
+        }
+
+<span class="fc" id="L120">        String message = String.format(</span>
+                &quot;disconnects=%d, reconnects=%d, failed=%d, avgReconnectTime=%.0fms, restorations=%d&quot;,
+<span class="fc" id="L122">                disconnects, reconnects, failed, avgReconnectMs, restored);</span>
+
+<span class="pc bpc" id="L124" title="1 of 2 branches missed.">        double metric = disconnects == 0 ? 100.0 : 100.0 * reconnects / disconnects;</span>
+
+<span class="fc" id="L126">        ValidationResult result = new ValidationResult(Area.RECONNECTION, status,</span>
+                message, metric, reconnectThresholdMs);
+<span class="fc" id="L128">        result.getDetails().put(&quot;disconnectCount&quot;, disconnects);</span>
+<span class="fc" id="L129">        result.getDetails().put(&quot;reconnectCount&quot;, reconnects);</span>
+<span class="fc" id="L130">        result.getDetails().put(&quot;failedReconnects&quot;, failed);</span>
+<span class="fc" id="L131">        result.getDetails().put(&quot;avgReconnectTimeMs&quot;, avgReconnectMs);</span>
+<span class="fc" id="L132">        result.getDetails().put(&quot;subscriptionRestorations&quot;, restored);</span>
+
+<span class="fc" id="L134">        return result;</span>
+    }
+
+    @Override
+    public void reset() {
+<span class="fc" id="L139">        disconnectCount.set(0);</span>
+<span class="fc" id="L140">        reconnectCount.set(0);</span>
+<span class="fc" id="L141">        failedReconnects.set(0);</span>
+<span class="fc" id="L142">        subscriptionRestorations.set(0);</span>
+<span class="fc" id="L143">        reconnectTimesMs.clear();</span>
+<span class="fc" id="L144">    }</span>
+
+    @Override
+    public void configure(Map&lt;String, Object&gt; config) {
+<span class="pc bpc" id="L148" title="1 of 2 branches missed.">        if (config.containsKey(&quot;reconnectThresholdMs&quot;)) {</span>
+<span class="fc" id="L149">            reconnectThresholdMs = ((Number) config.get(&quot;reconnectThresholdMs&quot;)).longValue();</span>
+        }
+<span class="fc" id="L151">    }</span>
+
+    // --- Visible for testing ---
+
+    long getDisconnectCount() {
+<span class="fc" id="L156">        return disconnectCount.get();</span>
+    }
+
+    long getReconnectCount() {
+<span class="fc" id="L160">        return reconnectCount.get();</span>
+    }
+
+    long getFailedReconnects() {
+<span class="fc" id="L164">        return failedReconnects.get();</span>
+    }
+
+    long getSubscriptionRestorations() {
+<span class="fc" id="L168">        return subscriptionRestorations.get();</span>
+    }
+
+    double getAvgReconnectTimeMs() {
+<span class="fc bfc" id="L172" title="All 2 branches covered.">        if (reconnectTimesMs.isEmpty()) return 0.0;</span>
+<span class="fc" id="L173">        return reconnectTimesMs.stream().mapToLong(Long::longValue).average().orElse(0.0);</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

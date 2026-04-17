@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FinnhubAdapter.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.feed</a> &gt; <span class="el_source">FinnhubAdapter.java</span></div><h1>FinnhubAdapter.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.feed;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.marketdata.validator.model.Tick;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
+/**
+ * Parses Finnhub WebSocket trade messages into Tick objects.
+ *
+ * Finnhub trade stream format:
+ * {
+ *   &quot;type&quot;: &quot;trade&quot;,
+ *   &quot;data&quot;: [
+ *     { &quot;s&quot;: &quot;AAPL&quot;, &quot;p&quot;: 178.50, &quot;v&quot;: 100, &quot;t&quot;: 1711000000000, &quot;c&quot;: [&quot;1&quot;] },
+ *     { &quot;s&quot;: &quot;AAPL&quot;, &quot;p&quot;: 178.52, &quot;v&quot;: 50, &quot;t&quot;: 1711000000001, &quot;c&quot;: [&quot;1&quot;] }
+ *   ]
+ * }
+ *
+ * Subscribe: {&quot;type&quot;:&quot;subscribe&quot;,&quot;symbol&quot;:&quot;AAPL&quot;}
+ * Unsubscribe: {&quot;type&quot;:&quot;unsubscribe&quot;,&quot;symbol&quot;:&quot;AAPL&quot;}
+ *
+ * URL: wss://ws.finnhub.io?token=YOUR_API_KEY
+ */
+<span class="fc" id="L33">public class FinnhubAdapter implements FeedAdapter {</span>
+
+<span class="fc" id="L35">    private static final Logger log = LoggerFactory.getLogger(FinnhubAdapter.class);</span>
+<span class="fc" id="L36">    private final ObjectMapper objectMapper = new ObjectMapper();</span>
+
+    @Override
+    public String getSubscribeMessage(List&lt;String&gt; symbols) {
+        // Finnhub requires one subscribe message per symbol
+        // We send them as a JSON array of commands for batch sending
+<span class="fc" id="L42">        return symbols.stream()</span>
+<span class="fc" id="L43">                .map(s -&gt; String.format(&quot;{\&quot;type\&quot;:\&quot;subscribe\&quot;,\&quot;symbol\&quot;:\&quot;%s\&quot;}&quot;, s))</span>
+<span class="fc" id="L44">                .collect(Collectors.joining(&quot;\n&quot;));</span>
+    }
+
+    @Override
+    public String getUnsubscribeMessage(List&lt;String&gt; symbols) {
+<span class="fc" id="L49">        return symbols.stream()</span>
+<span class="fc" id="L50">                .map(s -&gt; String.format(&quot;{\&quot;type\&quot;:\&quot;unsubscribe\&quot;,\&quot;symbol\&quot;:\&quot;%s\&quot;}&quot;, s))</span>
+<span class="fc" id="L51">                .collect(Collectors.joining(&quot;\n&quot;));</span>
+    }
+
+    @Override
+    public Tick parseTick(String rawMessage) {
+        try {
+<span class="fc" id="L57">            JsonNode node = objectMapper.readTree(rawMessage);</span>
+
+            // Only parse trade messages
+<span class="pc bpc" id="L60" title="1 of 4 branches missed.">            if (!node.has(&quot;type&quot;) || !&quot;trade&quot;.equals(node.get(&quot;type&quot;).asText())) {</span>
+<span class="fc" id="L61">                return null;</span>
+            }
+
+<span class="fc" id="L64">            JsonNode data = node.get(&quot;data&quot;);</span>
+<span class="pc bpc" id="L65" title="1 of 6 branches missed.">            if (data == null || !data.isArray() || data.isEmpty()) {</span>
+<span class="fc" id="L66">                return null;</span>
+            }
+
+            // Parse the first trade in the array (most common case).
+            // For multi-trade arrays, parseTicks() returns all of them.
+<span class="fc" id="L71">            return parseTradeNode(data.get(0));</span>
+<span class="fc" id="L72">        } catch (Exception e) {</span>
+<span class="fc" id="L73">            log.warn(&quot;Failed to parse Finnhub message: {}&quot;, e.getMessage());</span>
+<span class="fc" id="L74">            return null;</span>
+        }
+    }
+
+    /**
+     * Parse all trades from a Finnhub message.
+     * Finnhub batches multiple trades into a single message.
+     */
+    public List&lt;Tick&gt; parseTicks(String rawMessage) {
+<span class="fc" id="L83">        List&lt;Tick&gt; ticks = new ArrayList&lt;&gt;();</span>
+        try {
+<span class="fc" id="L85">            JsonNode node = objectMapper.readTree(rawMessage);</span>
+<span class="pc bpc" id="L86" title="1 of 4 branches missed.">            if (!node.has(&quot;type&quot;) || !&quot;trade&quot;.equals(node.get(&quot;type&quot;).asText())) {</span>
+<span class="fc" id="L87">                return ticks;</span>
+            }
+
+<span class="fc" id="L90">            JsonNode data = node.get(&quot;data&quot;);</span>
+<span class="pc bpc" id="L91" title="2 of 4 branches missed.">            if (data == null || !data.isArray()) {</span>
+<span class="nc" id="L92">                return ticks;</span>
+            }
+
+<span class="fc bfc" id="L95" title="All 2 branches covered.">            for (JsonNode tradeNode : data) {</span>
+<span class="fc" id="L96">                Tick tick = parseTradeNode(tradeNode);</span>
+<span class="pc bpc" id="L97" title="1 of 2 branches missed.">                if (tick != null) {</span>
+<span class="fc" id="L98">                    ticks.add(tick);</span>
+                }
+<span class="fc" id="L100">            }</span>
+<span class="nc" id="L101">        } catch (Exception e) {</span>
+<span class="nc" id="L102">            log.warn(&quot;Failed to parse Finnhub message batch: {}&quot;, e.getMessage());</span>
+<span class="fc" id="L103">        }</span>
+<span class="fc" id="L104">        return ticks;</span>
+    }
+
+    @Override
+    public boolean isHeartbeat(String rawMessage) {
+        try {
+<span class="fc" id="L110">            JsonNode node = objectMapper.readTree(rawMessage);</span>
+<span class="pc bpc" id="L111" title="1 of 4 branches missed.">            return node.has(&quot;type&quot;) &amp;&amp; &quot;ping&quot;.equals(node.get(&quot;type&quot;).asText());</span>
+<span class="fc" id="L112">        } catch (Exception e) {</span>
+<span class="fc" id="L113">            return false;</span>
+        }
+    }
+
+    private Tick parseTradeNode(JsonNode tradeNode) {
+        try {
+<span class="fc" id="L119">            Tick tick = new Tick();</span>
+<span class="fc" id="L120">            tick.setSymbol(tradeNode.get(&quot;s&quot;).asText());</span>
+<span class="fc" id="L121">            tick.setPrice(new BigDecimal(tradeNode.get(&quot;p&quot;).asText()));</span>
+<span class="fc" id="L122">            tick.setVolume(new BigDecimal(tradeNode.get(&quot;v&quot;).asText()));</span>
+<span class="fc" id="L123">            tick.setExchangeTimestamp(Instant.ofEpochMilli(tradeNode.get(&quot;t&quot;).asLong()));</span>
+<span class="fc" id="L124">            tick.setReceivedTimestamp(Instant.now());</span>
+<span class="fc" id="L125">            tick.setCorrelationId(UUID.randomUUID().toString());</span>
+
+            // Finnhub doesn't provide a sequence number — use trade timestamp as a proxy
+<span class="fc" id="L128">            tick.setSequenceNum(tradeNode.get(&quot;t&quot;).asLong());</span>
+
+<span class="fc" id="L130">            return tick;</span>
+<span class="nc" id="L131">        } catch (Exception e) {</span>
+<span class="nc" id="L132">            log.warn(&quot;Failed to parse Finnhub trade node: {}&quot;, e.getMessage());</span>
+<span class="nc" id="L133">            return null;</span>
+        }
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

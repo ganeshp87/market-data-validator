@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ConnectionStore.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.store</a> &gt; <span class="el_source">ConnectionStore.java</span></div><h1>ConnectionStore.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.store;
+
+import com.marketdata.validator.model.Connection;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
+import org.springframework.stereotype.Repository;
+
+import java.time.Instant;
+import java.util.Arrays;
+import java.util.List;
+import java.util.stream.Collectors;
+
+/**
+ * JDBC data access for the `connections` table.
+ * Persists feed connection configurations so they survive restarts.
+ */
+@Repository
+public class ConnectionStore {
+
+    private final JdbcTemplate jdbc;
+
+    private static final String INSERT_SQL =
+            &quot;INSERT INTO connections (id, name, url, adapter_type, symbols, created_at, updated_at) &quot; +
+            &quot;VALUES (?, ?, ?, ?, ?, ?, ?)&quot;;
+
+    private static final String UPDATE_SQL =
+            &quot;UPDATE connections SET name = ?, url = ?, adapter_type = ?, symbols = ?, updated_at = ? &quot; +
+            &quot;WHERE id = ?&quot;;
+
+    private static final String DELETE_SQL = &quot;DELETE FROM connections WHERE id = ?&quot;;
+
+    private static final String SELECT_ALL_SQL = &quot;SELECT * FROM connections ORDER BY created_at&quot;;
+
+<span class="fc" id="L34">    private static final RowMapper&lt;Connection&gt; ROW_MAPPER = (rs, rowNum) -&gt; {</span>
+<span class="nc" id="L35">        Connection conn = new Connection();</span>
+<span class="nc" id="L36">        conn.setId(rs.getString(&quot;id&quot;));</span>
+<span class="nc" id="L37">        conn.setName(rs.getString(&quot;name&quot;));</span>
+<span class="nc" id="L38">        conn.setUrl(rs.getString(&quot;url&quot;));</span>
+<span class="nc" id="L39">        conn.setAdapterType(Connection.AdapterType.valueOf(rs.getString(&quot;adapter_type&quot;)));</span>
+        // Symbols stored as JSON array string: [&quot;BTCUSDT&quot;,&quot;ETHUSDT&quot;]
+<span class="nc" id="L41">        String symbolsJson = rs.getString(&quot;symbols&quot;);</span>
+<span class="nc" id="L42">        List&lt;String&gt; symbols = parseSymbols(symbolsJson);</span>
+<span class="nc" id="L43">        conn.setSymbols(symbols);</span>
+<span class="nc" id="L44">        return conn;</span>
+    };
+
+<span class="fc" id="L47">    public ConnectionStore(JdbcTemplate jdbc) {</span>
+<span class="fc" id="L48">        this.jdbc = jdbc;</span>
+<span class="fc" id="L49">    }</span>
+
+    public void save(Connection connection) {
+<span class="nc" id="L52">        String now = Instant.now().toString();</span>
+<span class="nc" id="L53">        String symbolsJson = toSymbolsJson(connection.getSymbols());</span>
+<span class="nc" id="L54">        jdbc.update(INSERT_SQL,</span>
+<span class="nc" id="L55">                connection.getId(),</span>
+<span class="nc" id="L56">                connection.getName(),</span>
+<span class="nc" id="L57">                connection.getUrl(),</span>
+<span class="nc" id="L58">                connection.getAdapterType().name(),</span>
+                symbolsJson,
+                now,
+                now);
+<span class="nc" id="L62">    }</span>
+
+    public void update(Connection connection) {
+<span class="nc" id="L65">        String now = Instant.now().toString();</span>
+<span class="nc" id="L66">        String symbolsJson = toSymbolsJson(connection.getSymbols());</span>
+<span class="nc" id="L67">        jdbc.update(UPDATE_SQL,</span>
+<span class="nc" id="L68">                connection.getName(),</span>
+<span class="nc" id="L69">                connection.getUrl(),</span>
+<span class="nc" id="L70">                connection.getAdapterType().name(),</span>
+                symbolsJson,
+                now,
+<span class="nc" id="L73">                connection.getId());</span>
+<span class="nc" id="L74">    }</span>
+
+    public void delete(String id) {
+<span class="nc" id="L77">        jdbc.update(DELETE_SQL, id);</span>
+<span class="nc" id="L78">    }</span>
+
+    public List&lt;Connection&gt; findAll() {
+<span class="fc" id="L81">        return jdbc.query(SELECT_ALL_SQL, ROW_MAPPER);</span>
+    }
+
+    // --- Helpers ---
+
+    private static String toSymbolsJson(List&lt;String&gt; symbols) {
+<span class="nc bnc" id="L87" title="All 4 branches missed.">        if (symbols == null || symbols.isEmpty()) return &quot;[]&quot;;</span>
+<span class="nc" id="L88">        return &quot;[&quot; + symbols.stream()</span>
+<span class="nc" id="L89">                .map(s -&gt; &quot;\&quot;&quot; + s.replace(&quot;\&quot;&quot;, &quot;\\\&quot;&quot;) + &quot;\&quot;&quot;)</span>
+<span class="nc" id="L90">                .collect(Collectors.joining(&quot;,&quot;)) + &quot;]&quot;;</span>
+    }
+
+    private static List&lt;String&gt; parseSymbols(String json) {
+<span class="nc bnc" id="L94" title="All 6 branches missed.">        if (json == null || json.isBlank() || json.equals(&quot;[]&quot;)) {</span>
+<span class="nc" id="L95">            return List.of();</span>
+        }
+        // Simple parse: strip brackets and quotes, split by comma
+<span class="nc" id="L98">        String stripped = json.replaceAll(&quot;[\\[\\]\&quot;]&quot;, &quot;&quot;);</span>
+<span class="nc" id="L99">        return Arrays.stream(stripped.split(&quot;,&quot;))</span>
+<span class="nc" id="L100">                .map(String::trim)</span>
+<span class="nc bnc" id="L101" title="All 2 branches missed.">                .filter(s -&gt; !s.isEmpty())</span>
+<span class="nc" id="L102">                .collect(Collectors.toList());</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

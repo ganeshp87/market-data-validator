@@ -1,0 +1,197 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Tick.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.model</a> &gt; <span class="el_source">Tick.java</span></div><h1>Tick.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.model;
+
+import java.math.BigDecimal;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.UUID;
+
+/**
+ * A single market data tick — one price update from an exchange feed.
+ * This is the core data unit that flows through the entire system:
+ * Feed → ValidatorEngine → SessionRecorder → SSE → Browser.
+ */
+public class Tick {
+
+    private long id;
+    private String symbol;
+    private BigDecimal price;
+    private BigDecimal bid;
+    private BigDecimal ask;
+    private BigDecimal volume;
+    private long sequenceNum;
+    private Instant exchangeTimestamp;
+    private Instant receivedTimestamp;
+    private String feedId;
+    private Long sessionId;
+    private String correlationId;
+    private String traceId;
+    private String failureType; // Simulator-injected failure type (nullable)
+    private String source;      // Feed source, e.g. &quot;LVWR_T&quot;
+
+<span class="fc" id="L31">    public Tick() {</span>
+<span class="fc" id="L32">    }</span>
+
+    public Tick(String symbol, BigDecimal price, BigDecimal volume,
+<span class="fc" id="L35">                long sequenceNum, Instant exchangeTimestamp, String feedId) {</span>
+<span class="fc" id="L36">        this.symbol = symbol;</span>
+<span class="fc" id="L37">        this.price = price;</span>
+<span class="fc" id="L38">        this.volume = volume;</span>
+<span class="fc" id="L39">        this.sequenceNum = sequenceNum;</span>
+<span class="fc" id="L40">        this.exchangeTimestamp = exchangeTimestamp;</span>
+<span class="fc" id="L41">        this.receivedTimestamp = Instant.now();</span>
+<span class="fc" id="L42">        this.feedId = feedId;</span>
+<span class="fc" id="L43">        this.correlationId = UUID.randomUUID().toString();</span>
+<span class="fc" id="L44">    }</span>
+
+    /**
+     * Latency = receivedTimestamp - exchangeTimestamp.
+     * Returns Duration.ZERO if either timestamp is null.
+     */
+    public Duration getLatency() {
+<span class="fc bfc" id="L51" title="All 4 branches covered.">        if (exchangeTimestamp == null || receivedTimestamp == null) {</span>
+<span class="fc" id="L52">            return Duration.ZERO;</span>
+        }
+<span class="fc" id="L54">        return Duration.between(exchangeTimestamp, receivedTimestamp);</span>
+    }
+
+    /**
+     * Latency in milliseconds — convenience for validators and UI.
+     * Clamped to 0 minimum to handle clock skew between local machine and exchange servers.
+     */
+    public long getLatencyMs() {
+<span class="fc" id="L62">        return Math.max(0, getLatency().toMillis());</span>
+    }
+
+    // --- Getters and Setters ---
+
+    public long getId() {
+<span class="fc" id="L68">        return id;</span>
+    }
+
+    public void setId(long id) {
+<span class="fc" id="L72">        this.id = id;</span>
+<span class="fc" id="L73">    }</span>
+
+    public String getSymbol() {
+<span class="fc" id="L76">        return symbol;</span>
+    }
+
+    public void setSymbol(String symbol) {
+<span class="fc" id="L80">        this.symbol = symbol;</span>
+<span class="fc" id="L81">    }</span>
+
+    public BigDecimal getPrice() {
+<span class="fc" id="L84">        return price;</span>
+    }
+
+    public void setPrice(BigDecimal price) {
+<span class="fc" id="L88">        this.price = price;</span>
+<span class="fc" id="L89">    }</span>
+
+    public BigDecimal getBid() {
+<span class="fc" id="L92">        return bid;</span>
+    }
+
+    public void setBid(BigDecimal bid) {
+<span class="fc" id="L96">        this.bid = bid;</span>
+<span class="fc" id="L97">    }</span>
+
+    public BigDecimal getAsk() {
+<span class="fc" id="L100">        return ask;</span>
+    }
+
+    public void setAsk(BigDecimal ask) {
+<span class="fc" id="L104">        this.ask = ask;</span>
+<span class="fc" id="L105">    }</span>
+
+    public BigDecimal getVolume() {
+<span class="fc" id="L108">        return volume;</span>
+    }
+
+    public void setVolume(BigDecimal volume) {
+<span class="fc" id="L112">        this.volume = volume;</span>
+<span class="fc" id="L113">    }</span>
+
+    public long getSequenceNum() {
+<span class="fc" id="L116">        return sequenceNum;</span>
+    }
+
+    public void setSequenceNum(long sequenceNum) {
+<span class="fc" id="L120">        this.sequenceNum = sequenceNum;</span>
+<span class="fc" id="L121">    }</span>
+
+    public Instant getExchangeTimestamp() {
+<span class="fc" id="L124">        return exchangeTimestamp;</span>
+    }
+
+    public void setExchangeTimestamp(Instant exchangeTimestamp) {
+<span class="fc" id="L128">        this.exchangeTimestamp = exchangeTimestamp;</span>
+<span class="fc" id="L129">    }</span>
+
+    public Instant getReceivedTimestamp() {
+<span class="fc" id="L132">        return receivedTimestamp;</span>
+    }
+
+    public void setReceivedTimestamp(Instant receivedTimestamp) {
+<span class="fc" id="L136">        this.receivedTimestamp = receivedTimestamp;</span>
+<span class="fc" id="L137">    }</span>
+
+    public String getFeedId() {
+<span class="fc" id="L140">        return feedId;</span>
+    }
+
+    public void setFeedId(String feedId) {
+<span class="fc" id="L144">        this.feedId = feedId;</span>
+<span class="fc" id="L145">    }</span>
+
+    public Long getSessionId() {
+<span class="fc" id="L148">        return sessionId;</span>
+    }
+
+    public void setSessionId(Long sessionId) {
+<span class="fc" id="L152">        this.sessionId = sessionId;</span>
+<span class="fc" id="L153">    }</span>
+
+    public String getCorrelationId() {
+<span class="fc" id="L156">        return correlationId;</span>
+    }
+
+    public void setCorrelationId(String correlationId) {
+<span class="fc" id="L160">        this.correlationId = correlationId;</span>
+<span class="fc" id="L161">    }</span>
+
+    public String getTraceId() {
+<span class="fc" id="L164">        return traceId;</span>
+    }
+
+    public void setTraceId(String traceId) {
+<span class="fc" id="L168">        this.traceId = traceId;</span>
+<span class="fc" id="L169">    }</span>
+
+    public String getFailureType() {
+<span class="fc" id="L172">        return failureType;</span>
+    }
+
+    public void setFailureType(String failureType) {
+<span class="fc" id="L176">        this.failureType = failureType;</span>
+<span class="fc" id="L177">    }</span>
+
+    public String getSource() {
+<span class="fc" id="L180">        return source;</span>
+    }
+
+    public void setSource(String source) {
+<span class="fc" id="L184">        this.source = source;</span>
+<span class="fc" id="L185">    }</span>
+
+    /**
+     * Returns a composite key of feedId + symbol for per-feed validator state.
+     * Prevents the same symbol on two different feeds from colliding in dedup maps.
+     */
+    public String getFeedScopedSymbol() {
+<span class="pc bpc" id="L192" title="1 of 2 branches missed.">        String feed = feedId != null ? feedId : &quot;&quot;;</span>
+<span class="fc bfc" id="L193" title="All 2 branches covered.">        String sym = symbol != null ? symbol : &quot;&quot;;</span>
+<span class="fc" id="L194">        return feed + &quot;:&quot; + sym;</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

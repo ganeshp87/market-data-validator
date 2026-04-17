@@ -1,0 +1,428 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>StreamController.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.controller</a> &gt; <span class="el_source">StreamController.java</span></div><h1>StreamController.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.controller;
+
+import com.marketdata.validator.feed.FeedManager;
+import com.marketdata.validator.model.Alert;
+import com.marketdata.validator.model.Tick;
+import com.marketdata.validator.model.ValidationResult;
+import com.marketdata.validator.store.AlertStore;
+import com.marketdata.validator.validator.ValidatorEngine;
+import jakarta.annotation.PreDestroy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.ResponseEntity;
+import org.springframework.stereotype.Component;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
+import java.io.IOException;
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
+
+/**
+ * SSE (Server-Sent Events) controller for live streaming to the browser.
+ *
+ * Blueprint Section 8 — Live Streaming Endpoints:
+ *   GET /api/stream/ticks          — live tick stream (optional ?symbol= filter)
+ *   GET /api/stream/validation     — live validation results (all 9 areas)
+ *   GET /api/stream/latency        — latency stats every 1 second
+ *   GET /api/stream/throughput     — messages/sec every 1 second
+ *
+ * Implementation:
+ *   - Uses Spring MVC's SseEmitter (not WebFlux Flux)
+ *   - Registers as FeedManager global tick listener and ValidatorEngine listener
+ *   - Manages a set of active emitters per endpoint
+ *   - Scheduled tasks push latency and throughput stats every 1 second
+ */
+@RestController
+@RequestMapping(&quot;/api/stream&quot;)
+public class StreamController {
+
+<span class="fc" id="L47">    private static final Logger log = LoggerFactory.getLogger(StreamController.class);</span>
+    private static final long SSE_TIMEOUT = 0L; // No timeout — connection stays open
+
+    private final FeedManager feedManager;
+    private final ValidatorEngine engine;
+    private final AlertStore alertStore;
+
+    // Active SSE emitters per endpoint
+<span class="fc" id="L55">    private final List&lt;SseEmitter&gt; tickEmitters = new CopyOnWriteArrayList&lt;&gt;();</span>
+<span class="fc" id="L56">    private final List&lt;SseEmitter&gt; validationEmitters = new CopyOnWriteArrayList&lt;&gt;();</span>
+<span class="fc" id="L57">    private final List&lt;SseEmitter&gt; latencyEmitters = new CopyOnWriteArrayList&lt;&gt;();</span>
+<span class="fc" id="L58">    private final List&lt;SseEmitter&gt; throughputEmitters = new CopyOnWriteArrayList&lt;&gt;();</span>
+<span class="fc" id="L59">    private final List&lt;SseEmitter&gt; alertEmitters = new CopyOnWriteArrayList&lt;&gt;();</span>
+
+    // Throughput tracking
+<span class="fc" id="L62">    private final AtomicLong ticksInWindow = new AtomicLong(0);</span>
+<span class="fc" id="L63">    private final AtomicLong totalTicksEver = new AtomicLong(0);</span>
+<span class="fc" id="L64">    private volatile long peakPerSecond = 0;</span>
+
+    // Scheduled executor for periodic stats
+<span class="fc" id="L67">    private final ScheduledExecutorService scheduler =</span>
+<span class="fc" id="L68">            Executors.newSingleThreadScheduledExecutor(r -&gt; {</span>
+<span class="fc" id="L69">                Thread t = new Thread(r, &quot;sse-stats-scheduler&quot;);</span>
+<span class="fc" id="L70">                t.setDaemon(true);</span>
+<span class="fc" id="L71">                return t;</span>
+            });
+
+<span class="fc" id="L74">    public StreamController(FeedManager feedManager, ValidatorEngine engine, AlertStore alertStore) {</span>
+<span class="fc" id="L75">        this.feedManager = feedManager;</span>
+<span class="fc" id="L76">        this.engine = engine;</span>
+<span class="fc" id="L77">        this.alertStore = alertStore;</span>
+
+        // Register as tick listener on FeedManager
+<span class="fc" id="L80">        feedManager.addGlobalTickListener(this::onTick);</span>
+
+        // Register as validation result listener on ValidatorEngine
+<span class="fc" id="L83">        engine.addListener(this::onValidationUpdate);</span>
+
+        // Register as alert listener to broadcast new alerts via SSE
+<span class="fc" id="L86">        alertStore.addListener(this::onNewAlert);</span>
+
+        // Schedule periodic stats broadcasts (latency + throughput) every 1 second
+<span class="fc" id="L89">        scheduler.scheduleAtFixedRate(this::broadcastLatencyStats, 1, 1, TimeUnit.SECONDS);</span>
+<span class="fc" id="L90">        scheduler.scheduleAtFixedRate(this::broadcastThroughputStats, 1, 1, TimeUnit.SECONDS);</span>
+<span class="fc" id="L91">    }</span>
+
+    // --- SSE Endpoints ---
+
+    /**
+     * GET /api/stream/ticks — live tick stream.
+     * Optional query params:
+     *   ?symbol=BTCUSDT  — filter by symbol (case-insensitive)
+     *   ?feedId=abc123   — filter to one feed connection (prevents LVWR numeric symbols
+     *                      appearing in the Binance view when both feeds are running)
+     */
+    @GetMapping(&quot;/ticks&quot;)
+    public SseEmitter streamTicks(
+            @RequestParam(required = false) String symbol,
+            @RequestParam(required = false) String feedId) {
+<span class="fc" id="L106">        SseEmitter emitter = createEmitter(tickEmitters);</span>
+
+<span class="fc bfc" id="L108" title="All 4 branches covered.">        if (symbol != null &amp;&amp; !symbol.isBlank()) {</span>
+<span class="fc" id="L109">            symbolFilters.put(emitter, symbol.toUpperCase());</span>
+        }
+<span class="pc bpc" id="L111" title="3 of 4 branches missed.">        if (feedId != null &amp;&amp; !feedId.isBlank()) {</span>
+<span class="nc" id="L112">            feedIdFilters.put(emitter, feedId);</span>
+        }
+
+<span class="fc" id="L115">        return emitter;</span>
+    }
+
+    // Per-emitter filter maps
+<span class="fc" id="L119">    private final ConcurrentHashMap&lt;SseEmitter, String&gt; symbolFilters = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L120">    private final ConcurrentHashMap&lt;SseEmitter, String&gt; feedIdFilters  = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L121">    private final ConcurrentHashMap&lt;SseEmitter, String&gt; validationFeedFilters = new ConcurrentHashMap&lt;&gt;();</span>
+
+    /**
+     * GET /api/stream/validation — live validation results (all 9 areas).
+     * Optional ?feedId= scopes results to a single feed (Fix 8).
+     */
+    @GetMapping(&quot;/validation&quot;)
+    public SseEmitter streamValidation(
+            @RequestParam(required = false) String feedId) {
+<span class="fc" id="L130">        SseEmitter emitter = createEmitter(validationEmitters);</span>
+<span class="pc bpc" id="L131" title="3 of 4 branches missed.">        if (feedId != null &amp;&amp; !feedId.isBlank()) {</span>
+<span class="nc" id="L132">            validationFeedFilters.put(emitter, feedId);</span>
+        }
+<span class="fc" id="L134">        return emitter;</span>
+    }
+
+    /**
+     * GET /api/stream/latency — latency stats every 1 second.
+     */
+    @GetMapping(&quot;/latency&quot;)
+    public SseEmitter streamLatency() {
+<span class="fc" id="L142">        return createEmitter(latencyEmitters);</span>
+    }
+
+    /**
+     * GET /api/stream/throughput — messages/sec every 1 second.
+     */
+    @GetMapping(&quot;/throughput&quot;)
+    public SseEmitter streamThroughput() {
+<span class="fc" id="L150">        return createEmitter(throughputEmitters);</span>
+    }
+
+    /**
+     * GET /api/stream/alerts — live alert stream.
+     */
+    @GetMapping(&quot;/alerts&quot;)
+    public SseEmitter streamAlerts() {
+<span class="nc" id="L158">        return createEmitter(alertEmitters);</span>
+    }
+
+    /**
+     * GET /api/stream/stats — aggregated snapshot suitable for a dashboard header.
+     * Returns: totalTicks, messagesPerSecond (last second), peakPerSecond,
+     *          activeConnections, overallStatus, activeEmitters.
+     */
+    @GetMapping(&quot;/stats&quot;)
+    public ResponseEntity&lt;Map&lt;String, Object&gt;&gt; getStats() {
+<span class="nc" id="L168">        List&lt;ValidationResult&gt; results = engine.getResults();</span>
+<span class="nc" id="L169">        long active = feedManager.getActiveConnectionCount();</span>
+<span class="nc" id="L170">        Map&lt;String, Object&gt; stats = Map.of(</span>
+<span class="nc" id="L171">                &quot;timestamp&quot;, Instant.now(),</span>
+<span class="nc" id="L172">                &quot;totalTicks&quot;, totalTicksEver.get(),</span>
+<span class="nc" id="L173">                &quot;messagesPerSecond&quot;, ticksInWindow.get(),</span>
+<span class="nc" id="L174">                &quot;peakPerSecond&quot;, peakPerSecond,</span>
+<span class="nc" id="L175">                &quot;activeConnections&quot;, active,</span>
+<span class="nc" id="L176">                &quot;overallStatus&quot;, computeOverallStatus(results),</span>
+<span class="nc" id="L177">                &quot;activeEmitters&quot;, tickEmitters.size() + validationEmitters.size()</span>
+<span class="nc" id="L178">                        + latencyEmitters.size() + throughputEmitters.size()</span>
+        );
+<span class="nc" id="L180">        return ResponseEntity.ok(stats);</span>
+    }
+
+    // --- Internal: Tick handling ---
+
+    private void onTick(Tick tick) {
+<span class="nc" id="L186">        ticksInWindow.incrementAndGet();</span>
+<span class="nc" id="L187">        totalTicksEver.incrementAndGet();</span>
+
+<span class="nc bnc" id="L189" title="All 2 branches missed.">        for (SseEmitter emitter : tickEmitters) {</span>
+            try {
+                // Apply feedId filter — skip if tick is from a different feed
+<span class="nc" id="L192">                String feedFilter = feedIdFilters.get(emitter);</span>
+<span class="nc bnc" id="L193" title="All 4 branches missed.">                if (feedFilter != null &amp;&amp; !feedFilter.equals(tick.getFeedId())) {</span>
+<span class="nc" id="L194">                    continue;</span>
+                }
+                // Apply symbol filter
+<span class="nc" id="L197">                String symFilter = symbolFilters.get(emitter);</span>
+<span class="nc bnc" id="L198" title="All 4 branches missed.">                if (symFilter != null &amp;&amp; !symFilter.equals(tick.getSymbol())) {</span>
+<span class="nc" id="L199">                    continue;</span>
+                }
+
+<span class="nc" id="L202">                emitter.send(SseEmitter.event()</span>
+<span class="nc" id="L203">                        .name(&quot;tick&quot;)</span>
+<span class="nc" id="L204">                        .data(formatTick(tick)));</span>
+<span class="nc" id="L205">            } catch (IOException e) {</span>
+<span class="nc" id="L206">                removeEmitter(emitter, tickEmitters);</span>
+<span class="nc" id="L207">            }</span>
+<span class="nc" id="L208">        }</span>
+<span class="nc" id="L209">    }</span>
+
+    // --- Internal: Validation handling ---
+
+    private void onValidationUpdate(List&lt;ValidationResult&gt; results) {
+        // Global payload (no feed filter)
+<span class="fc" id="L215">        Map&lt;String, Object&gt; globalPayload = Map.of(</span>
+<span class="fc" id="L216">                &quot;timestamp&quot;, Instant.now(),</span>
+<span class="fc" id="L217">                &quot;results&quot;, engine.getResultsByArea(),</span>
+<span class="fc" id="L218">                &quot;overallStatus&quot;, computeOverallStatus(results),</span>
+<span class="fc" id="L219">                &quot;ticksProcessed&quot;, engine.getTickCount(),</span>
+<span class="fc" id="L220">                &quot;rejectedCount&quot;, engine.getRejectedCount(),</span>
+<span class="fc" id="L221">                &quot;duplicateCount&quot;, engine.getDuplicateCount()</span>
+        );
+
+<span class="pc bpc" id="L224" title="1 of 2 branches missed.">        for (SseEmitter emitter : validationEmitters) {</span>
+            try {
+<span class="nc" id="L226">                String feedFilter = validationFeedFilters.get(emitter);</span>
+                Map&lt;String, Object&gt; payload;
+<span class="nc bnc" id="L228" title="All 2 branches missed.">                if (feedFilter != null) {</span>
+                    // Per-feed scoped results (Fix 8)
+<span class="nc" id="L230">                    Map&lt;String, ValidationResult&gt; feedResults = engine.getResultsByArea(feedFilter);</span>
+<span class="nc bnc" id="L231" title="All 2 branches missed.">                    if (feedResults == null) feedResults = Map.of();</span>
+<span class="nc" id="L232">                    List&lt;ValidationResult&gt; feedResultList = List.copyOf(feedResults.values());</span>
+<span class="nc" id="L233">                    payload = Map.of(</span>
+<span class="nc" id="L234">                            &quot;timestamp&quot;, Instant.now(),</span>
+                            &quot;results&quot;, feedResults,
+<span class="nc" id="L236">                            &quot;overallStatus&quot;, computeOverallStatus(feedResultList),</span>
+<span class="nc" id="L237">                            &quot;ticksProcessed&quot;, engine.getTickCount(feedFilter),</span>
+<span class="nc" id="L238">                            &quot;rejectedCount&quot;, engine.getRejectedCount(),</span>
+<span class="nc" id="L239">                            &quot;duplicateCount&quot;, engine.getDuplicateCount()</span>
+                    );
+<span class="nc" id="L241">                } else {</span>
+<span class="nc" id="L242">                    payload = globalPayload;</span>
+                }
+<span class="nc" id="L244">                emitter.send(SseEmitter.event()</span>
+<span class="nc" id="L245">                        .name(&quot;validation&quot;)</span>
+<span class="nc" id="L246">                        .data(payload));</span>
+<span class="nc" id="L247">            } catch (IOException e) {</span>
+<span class="nc" id="L248">                removeEmitter(emitter, validationEmitters);</span>
+<span class="nc" id="L249">            }</span>
+<span class="nc" id="L250">        }</span>
+<span class="fc" id="L251">    }</span>
+
+    // --- Internal: Periodic stats ---
+
+    private void broadcastLatencyStats() {
+<span class="fc bfc" id="L256" title="All 2 branches covered.">        if (latencyEmitters.isEmpty()) {</span>
+<span class="fc" id="L257">            return;</span>
+        }
+
+        // Get latency stats from the LATENCY validator's result details
+<span class="fc" id="L261">        Map&lt;String, ValidationResult&gt; resultsByArea = engine.getResultsByArea();</span>
+<span class="fc" id="L262">        ValidationResult latencyResult = resultsByArea.get(&quot;LATENCY&quot;);</span>
+<span class="pc bpc" id="L263" title="1 of 2 branches missed.">        if (latencyResult == null) {</span>
+<span class="fc" id="L264">            return;</span>
+        }
+
+<span class="nc" id="L267">        Map&lt;String, Object&gt; details = latencyResult.getDetails();</span>
+<span class="nc" id="L268">        Map&lt;String, Object&gt; payload = Map.of(</span>
+<span class="nc" id="L269">                &quot;timestamp&quot;, Instant.now(),</span>
+<span class="nc" id="L270">                &quot;p50&quot;, details.getOrDefault(&quot;p50&quot;, 0),</span>
+<span class="nc" id="L271">                &quot;p95&quot;, details.getOrDefault(&quot;p95&quot;, 0),</span>
+<span class="nc" id="L272">                &quot;p99&quot;, details.getOrDefault(&quot;p99&quot;, 0),</span>
+<span class="nc" id="L273">                &quot;min&quot;, details.getOrDefault(&quot;min&quot;, 0),</span>
+<span class="nc" id="L274">                &quot;max&quot;, details.getOrDefault(&quot;max&quot;, 0),</span>
+<span class="nc" id="L275">                &quot;count&quot;, details.getOrDefault(&quot;totalTicks&quot;, 0)</span>
+        );
+
+<span class="nc bnc" id="L278" title="All 2 branches missed.">        for (SseEmitter emitter : latencyEmitters) {</span>
+            try {
+<span class="nc" id="L280">                emitter.send(SseEmitter.event()</span>
+<span class="nc" id="L281">                        .name(&quot;latency&quot;)</span>
+<span class="nc" id="L282">                        .data(payload));</span>
+<span class="nc" id="L283">            } catch (IOException e) {</span>
+<span class="nc" id="L284">                removeEmitter(emitter, latencyEmitters);</span>
+<span class="nc" id="L285">            }</span>
+<span class="nc" id="L286">        }</span>
+<span class="nc" id="L287">    }</span>
+
+    private void broadcastThroughputStats() {
+<span class="fc bfc" id="L290" title="All 2 branches covered.">        if (throughputEmitters.isEmpty()) {</span>
+<span class="fc" id="L291">            return;</span>
+        }
+
+<span class="fc" id="L294">        long currentRate = ticksInWindow.getAndSet(0);</span>
+<span class="pc bpc" id="L295" title="1 of 2 branches missed.">        if (currentRate &gt; peakPerSecond) {</span>
+<span class="nc" id="L296">            peakPerSecond = currentRate;</span>
+        }
+<span class="fc" id="L298">        long total = totalTicksEver.get();</span>
+
+<span class="fc" id="L300">        Map&lt;String, Object&gt; payload = Map.of(</span>
+<span class="fc" id="L301">                &quot;timestamp&quot;, Instant.now(),</span>
+<span class="fc" id="L302">                &quot;messagesPerSecond&quot;, currentRate,</span>
+<span class="fc" id="L303">                &quot;peakPerSecond&quot;, peakPerSecond,</span>
+<span class="fc" id="L304">                &quot;totalMessages&quot;, total</span>
+        );
+
+<span class="fc bfc" id="L307" title="All 2 branches covered.">        for (SseEmitter emitter : throughputEmitters) {</span>
+            try {
+<span class="fc" id="L309">                emitter.send(SseEmitter.event()</span>
+<span class="fc" id="L310">                        .name(&quot;throughput&quot;)</span>
+<span class="fc" id="L311">                        .data(payload));</span>
+<span class="nc" id="L312">            } catch (IOException e) {</span>
+<span class="nc" id="L313">                removeEmitter(emitter, throughputEmitters);</span>
+<span class="fc" id="L314">            }</span>
+<span class="fc" id="L315">        }</span>
+<span class="fc" id="L316">    }</span>
+
+    // --- Internal: Emitter management ---
+
+    private SseEmitter createEmitter(List&lt;SseEmitter&gt; emitterList) {
+<span class="fc" id="L321">        SseEmitter emitter = new SseEmitter(SSE_TIMEOUT);</span>
+<span class="fc" id="L322">        emitterList.add(emitter);</span>
+
+<span class="pc" id="L324">        emitter.onCompletion(() -&gt; removeEmitter(emitter, emitterList));</span>
+<span class="pc" id="L325">        emitter.onTimeout(() -&gt; removeEmitter(emitter, emitterList));</span>
+<span class="pc" id="L326">        emitter.onError(e -&gt; removeEmitter(emitter, emitterList));</span>
+
+        // Send an initial comment to flush the HTTP response headers immediately.
+        // Without this, some proxies (e.g. Vite dev server) buffer the response
+        // until the first real event arrives, preventing the browser's EventSource
+        // from firing its 'open' event and showing as 'Disconnected'.
+        try {
+<span class="fc" id="L333">            emitter.send(SseEmitter.event().comment(&quot;connected&quot;));</span>
+<span class="nc" id="L334">        } catch (IOException e) {</span>
+<span class="nc" id="L335">            removeEmitter(emitter, emitterList);</span>
+<span class="fc" id="L336">        }</span>
+
+<span class="fc" id="L338">        return emitter;</span>
+    }
+
+    private void removeEmitter(SseEmitter emitter, List&lt;SseEmitter&gt; emitterList) {
+<span class="nc" id="L342">        emitterList.remove(emitter);</span>
+<span class="nc" id="L343">        symbolFilters.remove(emitter);</span>
+<span class="nc" id="L344">        feedIdFilters.remove(emitter);</span>
+<span class="nc" id="L345">        validationFeedFilters.remove(emitter);</span>
+<span class="nc" id="L346">    }</span>
+
+    // --- Internal: Formatting ---
+
+    private Map&lt;String, Object&gt; formatTick(Tick tick) {
+<span class="nc" id="L351">        return Map.of(</span>
+<span class="nc" id="L352">                &quot;symbol&quot;, tick.getSymbol(),</span>
+<span class="nc" id="L353">                &quot;price&quot;, tick.getPrice().toPlainString(),</span>
+<span class="nc bnc" id="L354" title="All 2 branches missed.">                &quot;bid&quot;, tick.getBid() != null ? tick.getBid().toPlainString() : &quot;&quot;,</span>
+<span class="nc bnc" id="L355" title="All 2 branches missed.">                &quot;ask&quot;, tick.getAsk() != null ? tick.getAsk().toPlainString() : &quot;&quot;,</span>
+<span class="nc bnc" id="L356" title="All 2 branches missed.">                &quot;volume&quot;, tick.getVolume() != null ? tick.getVolume().toPlainString() : &quot;&quot;,</span>
+<span class="nc" id="L357">                &quot;sequenceNum&quot;, tick.getSequenceNum(),</span>
+<span class="nc" id="L358">                &quot;exchangeTimestamp&quot;, tick.getExchangeTimestamp().toString(),</span>
+<span class="nc" id="L359">                &quot;receivedTimestamp&quot;, tick.getReceivedTimestamp().toString(),</span>
+<span class="nc" id="L360">                &quot;feedId&quot;, tick.getFeedId(),</span>
+<span class="nc" id="L361">                &quot;latency&quot;, tick.getLatencyMs()</span>
+        );
+    }
+
+    private String computeOverallStatus(List&lt;ValidationResult&gt; results) {
+<span class="fc" id="L366">        boolean hasFail = false;</span>
+<span class="fc" id="L367">        boolean hasWarn = false;</span>
+<span class="fc bfc" id="L368" title="All 2 branches covered.">        for (ValidationResult r : results) {</span>
+<span class="pc bpc" id="L369" title="1 of 2 branches missed.">            if (r.getStatus() == ValidationResult.Status.FAIL) hasFail = true;</span>
+<span class="fc bfc" id="L370" title="All 2 branches covered.">            if (r.getStatus() == ValidationResult.Status.WARN) hasWarn = true;</span>
+<span class="fc" id="L371">        }</span>
+<span class="pc bpc" id="L372" title="1 of 2 branches missed.">        if (hasFail) return &quot;FAIL&quot;;</span>
+<span class="pc bpc" id="L373" title="1 of 2 branches missed.">        if (hasWarn) return &quot;WARN&quot;;</span>
+<span class="nc" id="L374">        return &quot;PASS&quot;;</span>
+    }
+
+    // --- Internal: Alert handling ---
+
+    private void onNewAlert(Alert alert) {
+<span class="fc" id="L380">        Map&lt;String, Object&gt; payload = Map.of(</span>
+<span class="fc" id="L381">                &quot;id&quot;, alert.getId(),</span>
+<span class="fc" id="L382">                &quot;area&quot;, alert.getArea(),</span>
+<span class="fc" id="L383">                &quot;severity&quot;, alert.getSeverity().name(),</span>
+<span class="fc" id="L384">                &quot;message&quot;, alert.getMessage(),</span>
+<span class="fc" id="L385">                &quot;acknowledged&quot;, alert.isAcknowledged(),</span>
+<span class="fc" id="L386">                &quot;createdAt&quot;, alert.getCreatedAt().toString()</span>
+        );
+
+<span class="pc bpc" id="L389" title="1 of 2 branches missed.">        for (SseEmitter emitter : alertEmitters) {</span>
+            try {
+<span class="nc" id="L391">                emitter.send(SseEmitter.event()</span>
+<span class="nc" id="L392">                        .name(&quot;alert&quot;)</span>
+<span class="nc" id="L393">                        .data(payload));</span>
+<span class="nc" id="L394">            } catch (IOException e) {</span>
+<span class="nc" id="L395">                removeEmitter(emitter, alertEmitters);</span>
+<span class="nc" id="L396">            }</span>
+<span class="nc" id="L397">        }</span>
+<span class="fc" id="L398">    }</span>
+
+    // --- For testing: expose emitter counts ---
+
+    @PreDestroy
+    void destroy() {
+<span class="nc" id="L404">        log.info(&quot;StreamController shutting down — stopping stats scheduler&quot;);</span>
+<span class="nc" id="L405">        scheduler.shutdownNow();</span>
+<span class="nc" id="L406">    }</span>
+
+    int getTickEmitterCount() {
+<span class="fc" id="L409">        return tickEmitters.size();</span>
+    }
+
+    int getValidationEmitterCount() {
+<span class="fc" id="L413">        return validationEmitters.size();</span>
+    }
+
+    int getLatencyEmitterCount() {
+<span class="fc" id="L417">        return latencyEmitters.size();</span>
+    }
+
+    int getThroughputEmitterCount() {
+<span class="fc" id="L421">        return throughputEmitters.size();</span>
+    }
+
+    int getAlertEmitterCount() {
+<span class="nc" id="L425">        return alertEmitters.size();</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

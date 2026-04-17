@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>GenericAdapter.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.feed</a> &gt; <span class="el_source">GenericAdapter.java</span></div><h1>GenericAdapter.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.feed;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.marketdata.validator.model.Tick;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
+/**
+ * Configurable adapter for custom/generic WebSocket feeds.
+ *
+ * Instead of hardcoding field names like BinanceAdapter or FinnhubAdapter,
+ * GenericAdapter uses a field-mapping configuration to extract tick data
+ * from arbitrary JSON message formats.
+ *
+ * Default field mappings (matching a common format):
+ *   symbol → &quot;symbol&quot;, price → &quot;price&quot;, volume → &quot;volume&quot;,
+ *   timestamp → &quot;timestamp&quot;, sequence → &quot;sequence&quot;
+ *
+ * Override via constructor to support any JSON feed format.
+ */
+public class GenericAdapter implements FeedAdapter {
+
+<span class="fc" id="L31">    private static final Logger log = LoggerFactory.getLogger(GenericAdapter.class);</span>
+<span class="fc" id="L32">    private final ObjectMapper objectMapper = new ObjectMapper();</span>
+
+    // Configurable JSON field names
+    private final String symbolField;
+    private final String priceField;
+    private final String volumeField;
+    private final String timestampField;
+    private final String sequenceField;
+    private final String typeField;
+    private final String tradeTypeValue;
+
+    /**
+     * Default constructor with common field names.
+     */
+    public GenericAdapter() {
+<span class="fc" id="L47">        this(Map.of());</span>
+<span class="fc" id="L48">    }</span>
+
+    /**
+     * Constructor with custom field mappings.
+     * Supported keys: symbol, price, volume, timestamp, sequence, typeField, tradeTypeValue
+     */
+<span class="fc" id="L54">    public GenericAdapter(Map&lt;String, String&gt; fieldMappings) {</span>
+<span class="fc" id="L55">        this.symbolField = fieldMappings.getOrDefault(&quot;symbol&quot;, &quot;symbol&quot;);</span>
+<span class="fc" id="L56">        this.priceField = fieldMappings.getOrDefault(&quot;price&quot;, &quot;price&quot;);</span>
+<span class="fc" id="L57">        this.volumeField = fieldMappings.getOrDefault(&quot;volume&quot;, &quot;volume&quot;);</span>
+<span class="fc" id="L58">        this.timestampField = fieldMappings.getOrDefault(&quot;timestamp&quot;, &quot;timestamp&quot;);</span>
+<span class="fc" id="L59">        this.sequenceField = fieldMappings.getOrDefault(&quot;sequence&quot;, &quot;sequence&quot;);</span>
+<span class="fc" id="L60">        this.typeField = fieldMappings.getOrDefault(&quot;typeField&quot;, &quot;type&quot;);</span>
+<span class="fc" id="L61">        this.tradeTypeValue = fieldMappings.getOrDefault(&quot;tradeTypeValue&quot;, &quot;trade&quot;);</span>
+<span class="fc" id="L62">    }</span>
+
+    @Override
+    public String getSubscribeMessage(List&lt;String&gt; symbols) {
+<span class="fc" id="L66">        String symbolList = symbols.stream()</span>
+<span class="fc" id="L67">                .map(s -&gt; &quot;\&quot;&quot; + s + &quot;\&quot;&quot;)</span>
+<span class="fc" id="L68">                .collect(Collectors.joining(&quot;,&quot;, &quot;[&quot;, &quot;]&quot;));</span>
+<span class="fc" id="L69">        return String.format(&quot;{\&quot;action\&quot;:\&quot;subscribe\&quot;,\&quot;symbols\&quot;:%s}&quot;, symbolList);</span>
+    }
+
+    @Override
+    public String getUnsubscribeMessage(List&lt;String&gt; symbols) {
+<span class="fc" id="L74">        String symbolList = symbols.stream()</span>
+<span class="fc" id="L75">                .map(s -&gt; &quot;\&quot;&quot; + s + &quot;\&quot;&quot;)</span>
+<span class="fc" id="L76">                .collect(Collectors.joining(&quot;,&quot;, &quot;[&quot;, &quot;]&quot;));</span>
+<span class="fc" id="L77">        return String.format(&quot;{\&quot;action\&quot;:\&quot;unsubscribe\&quot;,\&quot;symbols\&quot;:%s}&quot;, symbolList);</span>
+    }
+
+    @Override
+    public Tick parseTick(String rawMessage) {
+        try {
+<span class="fc" id="L83">            JsonNode node = objectMapper.readTree(rawMessage);</span>
+
+            // If typeField is present, only parse matching trade messages
+<span class="fc bfc" id="L86" title="All 4 branches covered.">            if (node.has(typeField) &amp;&amp; !tradeTypeValue.equals(node.get(typeField).asText())) {</span>
+<span class="fc" id="L87">                return null;</span>
+            }
+
+            // Symbol is required
+<span class="fc bfc" id="L91" title="All 2 branches covered.">            if (!node.has(symbolField)) {</span>
+<span class="fc" id="L92">                return null;</span>
+            }
+
+<span class="fc" id="L95">            Tick tick = new Tick();</span>
+<span class="fc" id="L96">            tick.setSymbol(node.get(symbolField).asText());</span>
+
+<span class="fc bfc" id="L98" title="All 2 branches covered.">            if (node.has(priceField)) {</span>
+<span class="fc" id="L99">                tick.setPrice(new BigDecimal(node.get(priceField).asText()));</span>
+            }
+<span class="fc bfc" id="L101" title="All 2 branches covered.">            if (node.has(volumeField)) {</span>
+<span class="fc" id="L102">                tick.setVolume(new BigDecimal(node.get(volumeField).asText()));</span>
+            }
+<span class="fc bfc" id="L104" title="All 2 branches covered.">            if (node.has(timestampField)) {</span>
+<span class="fc" id="L105">                long ts = node.get(timestampField).asLong();</span>
+<span class="fc" id="L106">                tick.setExchangeTimestamp(Instant.ofEpochMilli(ts));</span>
+<span class="fc" id="L107">            } else {</span>
+<span class="fc" id="L108">                tick.setExchangeTimestamp(Instant.now());</span>
+            }
+<span class="fc bfc" id="L110" title="All 2 branches covered.">            if (node.has(sequenceField)) {</span>
+<span class="fc" id="L111">                tick.setSequenceNum(node.get(sequenceField).asLong());</span>
+            }
+
+<span class="fc" id="L114">            tick.setReceivedTimestamp(Instant.now());</span>
+<span class="fc" id="L115">            tick.setCorrelationId(UUID.randomUUID().toString());</span>
+
+<span class="fc" id="L117">            return tick;</span>
+<span class="fc" id="L118">        } catch (Exception e) {</span>
+<span class="fc" id="L119">            log.warn(&quot;Failed to parse generic message: {}&quot;, e.getMessage());</span>
+<span class="fc" id="L120">            return null;</span>
+        }
+    }
+
+    @Override
+    public boolean isHeartbeat(String rawMessage) {
+        try {
+<span class="fc" id="L127">            JsonNode node = objectMapper.readTree(rawMessage);</span>
+<span class="fc bfc" id="L128" title="All 2 branches covered.">            if (node.has(typeField)) {</span>
+<span class="fc" id="L129">                String type = node.get(typeField).asText();</span>
+<span class="fc bfc" id="L130" title="All 6 branches covered.">                return &quot;ping&quot;.equals(type) || &quot;heartbeat&quot;.equals(type) || &quot;pong&quot;.equals(type);</span>
+            }
+<span class="fc" id="L132">            return false;</span>
+<span class="fc" id="L133">        } catch (Exception e) {</span>
+<span class="fc" id="L134">            return false;</span>
+        }
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>
