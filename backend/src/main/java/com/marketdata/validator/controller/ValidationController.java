@@ -82,7 +82,7 @@ public class ValidationController {
      *   { "config": { "warnThresholdMs": 200 } }
      */
     @PutMapping("/config")
-    public ResponseEntity<?> updateConfig(@RequestBody Map<String, Object> body) {
+    public ResponseEntity<Object> updateConfig(@RequestBody Map<String, Object> body) {
         @SuppressWarnings("unchecked")
         Map<String, Object> config = (Map<String, Object>) body.get("config");
         if (config == null || config.isEmpty()) {

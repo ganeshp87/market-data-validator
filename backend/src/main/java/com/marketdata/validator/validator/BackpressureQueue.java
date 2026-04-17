@@ -33,6 +33,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public class BackpressureQueue {
 
     private static final Logger log = LoggerFactory.getLogger(BackpressureQueue.class);
+    private static final String EVENT_KEY = "event";
     static final int DEFAULT_CAPACITY = 10_000;
 
     /**
@@ -80,7 +81,7 @@ public class BackpressureQueue {
         log.info("BackpressureQueue started: {} {} {}",
                 StructuredArguments.keyValue("capacity", capacity),
                 StructuredArguments.keyValue("policy", dropPolicy),
-                StructuredArguments.keyValue("event", "queue_started"));
+                StructuredArguments.keyValue(EVENT_KEY, "queue_started"));
     }
 
     /**
@@ -101,7 +102,7 @@ public class BackpressureQueue {
                 droppedCount.incrementAndGet();
                 log.trace("Queue full — dropped newest tick {} {}",
                         StructuredArguments.keyValue("seq", tick.getSequenceNum()),
-                        StructuredArguments.keyValue("event", "tick_dropped"));
+                        StructuredArguments.keyValue(EVENT_KEY, "tick_dropped"));
             }
         } else {
             // DROP_OLDEST (default)
@@ -118,7 +119,7 @@ public class BackpressureQueue {
                     droppedCount.incrementAndGet();
                     log.trace("Queue full — dropped oldest tick, added {} {}",
                             StructuredArguments.keyValue("seq", tick.getSequenceNum()),
-                            StructuredArguments.keyValue("event", "tick_dropped"));
+                            StructuredArguments.keyValue(EVENT_KEY, "tick_dropped"));
                 }
             }
         }
@@ -134,16 +135,7 @@ public class BackpressureQueue {
             try {
                 Tick tick = queue.poll(100, TimeUnit.MILLISECONDS);
                 if (tick != null) {
-                    try {
-                        engine.onTick(tick);
-                        totalProcessed.incrementAndGet();
-                    } catch (Exception e) {
-                        log.error("ValidatorEngine threw on tick {} {} {}",
-                                StructuredArguments.keyValue("seq", tick.getSequenceNum()),
-                                StructuredArguments.keyValue("event", "validation_error"),
-                                StructuredArguments.keyValue("error", e.getMessage()), e);
-                        // Don't stop consuming — one bad tick shouldn't kill the pipeline
-                    }
+                    processTick(tick);
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -151,6 +143,18 @@ public class BackpressureQueue {
             }
         }
         log.info("BackpressureQueue consumer stopped");
+    }
+
+    private void processTick(Tick tick) {
+        try {
+            engine.onTick(tick);
+            totalProcessed.incrementAndGet();
+        } catch (Exception e) {
+            log.error("ValidatorEngine threw on tick {} {} {}",
+                    StructuredArguments.keyValue("seq", tick.getSequenceNum()),
+                    StructuredArguments.keyValue(EVENT_KEY, "validation_error"),
+                    StructuredArguments.keyValue("error", e.getMessage()), e);
+        }
     }
 
     // ── Metrics ─────────────────────────────────────────

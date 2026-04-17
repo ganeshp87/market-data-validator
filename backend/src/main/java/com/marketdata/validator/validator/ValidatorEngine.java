@@ -73,8 +73,8 @@ public class ValidatorEngine {
     @PostConstruct
     void startThroughputTimer() {
         validators.stream()
-                .filter(v -> v instanceof ThroughputValidator)
-                .map(v -> (ThroughputValidator) v)
+                .filter(ThroughputValidator.class::isInstance)
+                .map(ThroughputValidator.class::cast)
                 .findFirst()
                 .ifPresent(globalTv -> {
                     throughputScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -110,19 +110,19 @@ public class ValidatorEngine {
      * Fans out to both the global validator set and the per-feed validator set (Fix 8).
      */
     public void onTick(Tick tick) {
-        // Pre-validation gate: reject ticks with missing required fields
         if (fieldGate != null && !fieldGate.isValid(tick)) {
             return;
         }
-
         tickCount.incrementAndGet();
-
-        // Assign traceId for end-to-end tracing through the validation pipeline
         if (tick.getTraceId() == null) {
             tick.setTraceId(java.util.UUID.randomUUID().toString());
         }
+        fanOutToGlobalValidators(tick);
+        List<Validator> perFeed = fanOutToPerFeedValidators(tick);
+        maybeNotifyListeners(tick.getFeedId(), perFeed);
+    }
 
-        // Global validators
+    private void fanOutToGlobalValidators(Tick tick) {
         for (Validator v : validators) {
             try {
                 v.onTick(tick);
@@ -132,26 +132,27 @@ public class ValidatorEngine {
                         v.getArea(), tick.getSequenceNum(), e.getMessage(), e);
             }
         }
+    }
 
-        // Per-feed validators (Fix 8) — lazily created on first tick per feed
+    private List<Validator> fanOutToPerFeedValidators(Tick tick) {
         String feedId = tick.getFeedId();
-        List<Validator> perFeed = null;
-        if (feedId != null && !feedId.isBlank()) {
-            feedTickCounts.computeIfAbsent(feedId, k -> new AtomicLong(0)).incrementAndGet();
-            perFeed = feedValidators.computeIfAbsent(feedId, k -> createValidatorSet());
-            for (Validator v : perFeed) {
-                try {
-                    v.onTick(tick);
-                } catch (Exception e) {
-                    log.error("Per-feed validator {} threw on tick seq={} feedId={}: {}",
-                            v.getArea(), tick.getSequenceNum(), feedId, e.getMessage(), e);
-                }
+        if (feedId == null || feedId.isBlank()) {
+            return null;
+        }
+        feedTickCounts.computeIfAbsent(feedId, k -> new AtomicLong(0)).incrementAndGet();
+        List<Validator> perFeed = feedValidators.computeIfAbsent(feedId, k -> createValidatorSet());
+        for (Validator v : perFeed) {
+            try {
+                v.onTick(tick);
+            } catch (Exception e) {
+                log.error("Per-feed validator {} threw on tick seq={} feedId={}: {}",
+                        v.getArea(), tick.getSequenceNum(), feedId, e.getMessage(), e);
             }
         }
+        return perFeed;
+    }
 
-        // Throttle listener notifications to avoid stalling the consumer thread.
-        // SSE serialisation + send on every tick caused BackpressureQueue drops
-        // which created false completeness gaps (Fix 9).
+    private void maybeNotifyListeners(String feedId, List<Validator> perFeed) {
         long now = System.currentTimeMillis();
         if (now - lastNotifyTimeMs >= NOTIFY_INTERVAL_MS) {
             lastNotifyTimeMs = now;
@@ -168,7 +169,7 @@ public class ValidatorEngine {
     public List<ValidationResult> getResults() {
         return validators.stream()
                 .map(Validator::getResult)
-                .collect(Collectors.toList());
+                .toList();
     }
 
     /**
@@ -186,7 +187,7 @@ public class ValidatorEngine {
     public List<ValidationResult> getResults(String feedId) {
         List<Validator> perFeed = feedValidators.get(feedId);
         if (perFeed == null) return Collections.emptyList();
-        return perFeed.stream().map(Validator::getResult).collect(Collectors.toList());
+        return perFeed.stream().map(Validator::getResult).toList();
     }
 
     /**
@@ -292,8 +293,9 @@ public class ValidatorEngine {
      */
     public long getDuplicateCount() {
         return validators.stream()
-                .filter(v -> v instanceof OrderingValidator)
-                .map(v -> ((OrderingValidator) v).getDuplicateCount())
+                .filter(OrderingValidator.class::isInstance)
+                .map(OrderingValidator.class::cast)
+                .map(OrderingValidator::getDuplicateCount)
                 .findFirst()
                 .orElse(0L);
     }
@@ -311,8 +313,8 @@ public class ValidatorEngine {
      */
     public ReconnectionValidator getReconnectionValidator() {
         return validators.stream()
-                .filter(v -> v instanceof ReconnectionValidator)
-                .map(v -> (ReconnectionValidator) v)
+                .filter(ReconnectionValidator.class::isInstance)
+                .map(ReconnectionValidator.class::cast)
                 .findFirst()
                 .orElse(null);
     }
@@ -370,7 +372,7 @@ public class ValidatorEngine {
         }
         List<ValidationResult> results = perFeed.stream()
                 .map(Validator::getResult)
-                .collect(Collectors.toList());
+                .toList();
         for (BiConsumer<String, List<ValidationResult>> listener : perFeedListeners) {
             try {
                 listener.accept(feedId, results);

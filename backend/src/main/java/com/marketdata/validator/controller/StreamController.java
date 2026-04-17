@@ -10,7 +10,6 @@ import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
-import org.springframework.stereotype.Component;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -23,7 +22,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Consumer;
 
 /**
  * SSE (Server-Sent Events) controller for live streaming to the browser.
@@ -46,10 +44,11 @@ public class StreamController {
 
     private static final Logger log = LoggerFactory.getLogger(StreamController.class);
     private static final long SSE_TIMEOUT = 0L; // No timeout — connection stays open
+    private static final String KEY_TIMESTAMP = "timestamp";
+    private static final String KEY_OVERALL_STATUS = "overallStatus";
 
     private final FeedManager feedManager;
     private final ValidatorEngine engine;
-    private final AlertStore alertStore;
 
     // Active SSE emitters per endpoint
     private final List<SseEmitter> tickEmitters = new CopyOnWriteArrayList<>();
@@ -74,7 +73,6 @@ public class StreamController {
     public StreamController(FeedManager feedManager, ValidatorEngine engine, AlertStore alertStore) {
         this.feedManager = feedManager;
         this.engine = engine;
-        this.alertStore = alertStore;
 
         // Register as tick listener on FeedManager
         feedManager.addGlobalTickListener(this::onTick);
@@ -168,12 +166,12 @@ public class StreamController {
         List<ValidationResult> results = engine.getResults();
         long active = feedManager.getActiveConnectionCount();
         Map<String, Object> stats = Map.of(
-                "timestamp", Instant.now(),
+                KEY_TIMESTAMP, Instant.now(),
                 "totalTicks", totalTicksEver.get(),
                 "messagesPerSecond", ticksInWindow.get(),
                 "peakPerSecond", peakPerSecond.get(),
                 "activeConnections", active,
-                "overallStatus", computeOverallStatus(results),
+                KEY_OVERALL_STATUS, computeOverallStatus(results),
                 "activeEmitters", tickEmitters.size() + validationEmitters.size()
                         + latencyEmitters.size() + throughputEmitters.size()
         );
@@ -188,20 +186,15 @@ public class StreamController {
 
         for (SseEmitter emitter : tickEmitters) {
             try {
-                // Apply feedId filter — skip if tick is from a different feed
                 String feedFilter = feedIdFilters.get(emitter);
-                if (feedFilter != null && !feedFilter.equals(tick.getFeedId())) {
-                    continue;
-                }
-                // Apply symbol filter
                 String symFilter = symbolFilters.get(emitter);
-                if (symFilter != null && !symFilter.equals(tick.getSymbol())) {
-                    continue;
+                boolean feedMatch = feedFilter == null || feedFilter.equals(tick.getFeedId());
+                boolean symMatch = symFilter == null || symFilter.equals(tick.getSymbol());
+                if (feedMatch && symMatch) {
+                    emitter.send(SseEmitter.event()
+                            .name("tick")
+                            .data(formatTick(tick)));
                 }
-
-                emitter.send(SseEmitter.event()
-                        .name("tick")
-                        .data(formatTick(tick)));
             } catch (IOException e) {
                 removeEmitter(emitter, tickEmitters);
             }
@@ -213,9 +206,9 @@ public class StreamController {
     private void onValidationUpdate(List<ValidationResult> results) {
         // Global payload (no feed filter)
         Map<String, Object> globalPayload = Map.of(
-                "timestamp", Instant.now(),
+                KEY_TIMESTAMP, Instant.now(),
                 "results", engine.getResultsByArea(),
-                "overallStatus", computeOverallStatus(results),
+                KEY_OVERALL_STATUS, computeOverallStatus(results),
                 "ticksProcessed", engine.getTickCount(),
                 "rejectedCount", engine.getRejectedCount(),
                 "duplicateCount", engine.getDuplicateCount()
@@ -231,9 +224,9 @@ public class StreamController {
                     if (feedResults == null) feedResults = Map.of();
                     List<ValidationResult> feedResultList = List.copyOf(feedResults.values());
                     payload = Map.of(
-                            "timestamp", Instant.now(),
+                            KEY_TIMESTAMP, Instant.now(),
                             "results", feedResults,
-                            "overallStatus", computeOverallStatus(feedResultList),
+                            KEY_OVERALL_STATUS, computeOverallStatus(feedResultList),
                             "ticksProcessed", engine.getTickCount(feedFilter),
                             "rejectedCount", engine.getRejectedCount(),
                             "duplicateCount", engine.getDuplicateCount()
@@ -266,7 +259,7 @@ public class StreamController {
 
         Map<String, Object> details = latencyResult.getDetails();
         Map<String, Object> payload = Map.of(
-                "timestamp", Instant.now(),
+                KEY_TIMESTAMP, Instant.now(),
                 "p50", details.getOrDefault("p50", 0),
                 "p95", details.getOrDefault("p95", 0),
                 "p99", details.getOrDefault("p99", 0),
@@ -296,7 +289,7 @@ public class StreamController {
         long total = totalTicksEver.get();
 
         Map<String, Object> payload = Map.of(
-                "timestamp", Instant.now(),
+                KEY_TIMESTAMP, Instant.now(),
                 "messagesPerSecond", currentRate,
                 "peakPerSecond", peakPerSecond.get(),
                 "totalMessages", total

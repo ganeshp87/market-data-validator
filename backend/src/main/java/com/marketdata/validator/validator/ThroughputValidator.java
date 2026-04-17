@@ -4,12 +4,9 @@ import com.marketdata.validator.model.Tick;
 import com.marketdata.validator.model.ValidationResult;
 import com.marketdata.validator.model.ValidationResult.Area;
 import com.marketdata.validator.model.ValidationResult.Status;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
-import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -40,8 +37,6 @@ import java.util.concurrent.locks.ReentrantLock;
  */
 @Component
 public class ThroughputValidator implements Validator {
-
-    private static final Logger log = LoggerFactory.getLogger(ThroughputValidator.class);
 
     // --- Configurable thresholds ---
     private static final int DEFAULT_WINDOW_SIZE = 60;         // seconds

@@ -37,7 +37,7 @@ public class BinanceAdapter implements FeedAdapter {
     public String getSubscribeMessage(List<String> symbols) {
         List<String> streams = symbols.stream()
                 .map(s -> s.toLowerCase() + "@trade")
-                .collect(Collectors.toList());
+                .toList();
 
         return String.format(
                 "{\"method\":\"SUBSCRIBE\",\"params\":%s,\"id\":1}",
@@ -48,7 +48,7 @@ public class BinanceAdapter implements FeedAdapter {
     public String getUnsubscribeMessage(List<String> symbols) {
         List<String> streams = symbols.stream()
                 .map(s -> s.toLowerCase() + "@trade")
-                .collect(Collectors.toList());
+                .toList();
 
         return String.format(
                 "{\"method\":\"UNSUBSCRIBE\",\"params\":%s,\"id\":2}",

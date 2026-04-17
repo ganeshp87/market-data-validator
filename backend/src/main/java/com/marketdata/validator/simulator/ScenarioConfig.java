@@ -20,7 +20,7 @@ public class ScenarioConfig {
     private long disconnectDurationMs = 8_000L;   // How long DISCONNECT failure pauses emission
     private long reconnectPauseDurationMs = 500L; // Brief pause per RECONNECT_STORM event
 
-    public ScenarioConfig() {}
+    public ScenarioConfig() { /* required for JSON deserialization */ }
 
     public SimulatorMode getMode() { return mode; }
     public void setMode(SimulatorMode mode) { this.mode = mode; }
@@ -29,7 +29,7 @@ public class ScenarioConfig {
     public void setTargetScenario(FailureType targetScenario) { this.targetScenario = targetScenario; }
 
     public double getFailureRate() { return failureRate; }
-    public void setFailureRate(double failureRate) { this.failureRate = Math.max(0.0, Math.min(1.0, failureRate)); }
+    public void setFailureRate(double failureRate) { this.failureRate = Math.clamp(failureRate, 0.0, 1.0); }
 
     public int getNumTrades() { return numTrades; }
     public void setNumTrades(int numTrades) { this.numTrades = numTrades; }
@@ -41,7 +41,7 @@ public class ScenarioConfig {
     public void setIncludeHeartbeats(boolean includeHeartbeats) { this.includeHeartbeats = includeHeartbeats; }
 
     public int getTicksPerSecond() { return ticksPerSecond; }
-    public void setTicksPerSecond(int ticksPerSecond) { this.ticksPerSecond = Math.max(1, Math.min(1000, ticksPerSecond)); }
+    public void setTicksPerSecond(int ticksPerSecond) { this.ticksPerSecond = Math.clamp(ticksPerSecond, 1, 1000); }
 
     public long getDisconnectDurationMs() { return disconnectDurationMs; }
     public void setDisconnectDurationMs(long disconnectDurationMs) { this.disconnectDurationMs = Math.max(0, disconnectDurationMs); }

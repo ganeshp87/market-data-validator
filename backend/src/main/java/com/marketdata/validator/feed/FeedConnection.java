@@ -20,7 +20,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 /**
@@ -31,6 +30,7 @@ import java.util.function.Consumer;
 public class FeedConnection {
 
     private static final Logger log = LoggerFactory.getLogger(FeedConnection.class);
+    private static final String EVENT_KEY = "event";
     private static final int MAX_RECONNECT_ATTEMPTS = 10;
     private static final long MAX_BACKOFF_MS = 30_000;
     static final int OFFSET_SAMPLE_SIZE = 20;
@@ -141,7 +141,7 @@ public class FeedConnection {
             reconnectAttempts.set(0);
             log.info("Connected to feed: {} {}",
                     StructuredArguments.keyValue("feed", connection.getName()),
-                    StructuredArguments.keyValue("event", "connected"));
+                    StructuredArguments.keyValue(EVENT_KEY, "connected"));
 
             // Notify reconnect lifecycle if this was a recovery (disconnectTime set by handleDisconnect)
             Instant dt = disconnectTime.get();
@@ -167,7 +167,7 @@ public class FeedConnection {
         .doOnError(error -> {
             log.warn("WebSocket error for {} {} {}",
                     StructuredArguments.keyValue("feed", connection.getName()),
-                    StructuredArguments.keyValue("event", "ws_error"),
+                    StructuredArguments.keyValue(EVENT_KEY, "ws_error"),
                     StructuredArguments.keyValue("error", error.getMessage()));
             handleDisconnect();
         })
@@ -223,7 +223,7 @@ public class FeedConnection {
                 offsetCalibrated = true;
                 log.info("Clock offset calibrated: {}ms (minRaw={}ms, baseline={}ms) from {} samples {}",
                         clockOffsetMs, minRaw, ASSUMED_MIN_NETWORK_MS, OFFSET_SAMPLE_SIZE,
-                        StructuredArguments.keyValue("event", "clock_offset_calibrated"));
+                        StructuredArguments.keyValue(EVENT_KEY, "clock_offset_calibrated"));
             }
         }
 
@@ -276,7 +276,7 @@ public class FeedConnection {
             log.error("Feed {} failed after {} reconnect attempts {}",
                     StructuredArguments.keyValue("feed", connection.getName()),
                     MAX_RECONNECT_ATTEMPTS,
-                    StructuredArguments.keyValue("event", "reconnect_exhausted"));
+                    StructuredArguments.keyValue(EVENT_KEY, "reconnect_exhausted"));
             Runnable rfcb = reconnectFailedCallback.get();
             if (rfcb != null) rfcb.run();
             return;
@@ -287,7 +287,7 @@ public class FeedConnection {
         log.info("Reconnecting {} in {}ms (attempt {}/{}) {}",
                 StructuredArguments.keyValue("feed", connection.getName()),
                 backoffMs, attempt, MAX_RECONNECT_ATTEMPTS,
-                StructuredArguments.keyValue("event", "reconnecting"));
+                StructuredArguments.keyValue(EVENT_KEY, "reconnecting"));
 
         // Schedule reconnect on a virtual thread (or daemon thread)
         Thread.ofVirtual().start(() -> {

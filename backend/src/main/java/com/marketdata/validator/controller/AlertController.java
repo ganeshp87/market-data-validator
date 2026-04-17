@@ -33,7 +33,7 @@ public class AlertController {
     }
 
     @PostMapping("/{id}/acknowledge")
-    public ResponseEntity<?> acknowledge(@PathVariable long id) {
+    public ResponseEntity<Object> acknowledge(@PathVariable long id) {
         boolean updated = alertStore.acknowledge(id);
         if (!updated) {
             return ResponseEntity.notFound().build();
@@ -42,13 +42,13 @@ public class AlertController {
     }
 
     @PostMapping("/acknowledge-all")
-    public ResponseEntity<?> acknowledgeAll() {
+    public ResponseEntity<Object> acknowledgeAll() {
         alertStore.acknowledgeAll();
         return ResponseEntity.ok().build();
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<?> delete(@PathVariable long id) {
+    public ResponseEntity<Object> delete(@PathVariable long id) {
         boolean deleted = alertStore.delete(id);
         if (!deleted) {
             return ResponseEntity.notFound().build();
@@ -57,7 +57,7 @@ public class AlertController {
     }
 
     @DeleteMapping
-    public ResponseEntity<?> deleteAll() {
+    public ResponseEntity<Object> deleteAll() {
         alertStore.deleteAll();
         return ResponseEntity.noContent().build();
     }

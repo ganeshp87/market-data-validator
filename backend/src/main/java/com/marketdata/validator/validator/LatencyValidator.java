@@ -118,8 +118,11 @@ public class LatencyValidator implements Validator {
                     "No ticks processed yet", 0.0, thresholdMs);
         }
 
-        long p50, p95, p99;
-        long min, max;
+        long p50;
+        long p95;
+        long p99;
+        long min;
+        long max;
         int currentCount;
 
         bufferLock.lock();
