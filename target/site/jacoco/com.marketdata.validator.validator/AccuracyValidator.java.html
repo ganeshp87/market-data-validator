@@ -1,0 +1,212 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AccuracyValidator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.validator</a> &gt; <span class="el_source">AccuracyValidator.java</span></div><h1>AccuracyValidator.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.validator;
+
+import com.marketdata.validator.model.Tick;
+import com.marketdata.validator.model.ValidationResult;
+import com.marketdata.validator.model.ValidationResult.Area;
+import com.marketdata.validator.model.ValidationResult.Status;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.stereotype.Component;
+
+import java.math.BigDecimal;
+import java.math.MathContext;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+
+/**
+ * Validates that tick prices are positive, consistent, and within expected ranges.
+ *
+ * Blueprint Section 9.1:
+ *   1. Price &gt; 0 (reject zero/negative)
+ *   2. Bid &lt;= Ask (if both present)
+ *   3. Price change &lt; 10% from previous tick per symbol (large move detection)
+ *
+ * Thresholds:
+ *   PASS: accuracyRate &gt;= 99.99%
+ *   WARN: accuracyRate &gt;= 99.0%
+ *   FAIL: accuracyRate &lt; 99.0%
+ */
+@Component
+<span class="fc" id="L34">public class AccuracyValidator implements Validator {</span>
+
+<span class="fc" id="L36">    private static final Logger log = LoggerFactory.getLogger(AccuracyValidator.class);</span>
+    private static final double DEFAULT_PASS_THRESHOLD = 99.99;
+    private static final double DEFAULT_WARN_THRESHOLD = 99.0;
+<span class="fc" id="L39">    private static final BigDecimal DEFAULT_LARGE_MOVE_PERCENT = new BigDecimal(&quot;0.10&quot;); // 10%</span>
+
+<span class="fc" id="L41">    private final Map&lt;String, BigDecimal&gt; lastPriceBySymbol = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L42">    private final Map&lt;String, Instant&gt; lastTickTimeBySymbol = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L43">    private final Map&lt;String, Long&gt; lastSequenceBySymbol = new ConcurrentHashMap&lt;&gt;();</span>
+    // If the gap since the last tick for a symbol exceeds this threshold, the feed was
+    // likely down and the new tick is treated as a fresh baseline (no spike comparison).
+<span class="fc" id="L46">    private volatile long reconnectGapMs = 60_000L;</span>
+<span class="fc" id="L47">    private final AtomicLong totalTicks = new AtomicLong(0);</span>
+<span class="fc" id="L48">    private final AtomicLong validTicks = new AtomicLong(0);</span>
+<span class="fc" id="L49">    private final AtomicLong invalidPriceCount = new AtomicLong(0);</span>
+<span class="fc" id="L50">    private final AtomicLong bidAskViolations = new AtomicLong(0);</span>
+<span class="fc" id="L51">    private final AtomicLong largeMoveCount = new AtomicLong(0);</span>
+
+<span class="fc" id="L53">    private double passThreshold = DEFAULT_PASS_THRESHOLD;</span>
+<span class="fc" id="L54">    private double warnThreshold = DEFAULT_WARN_THRESHOLD;</span>
+<span class="fc" id="L55">    private BigDecimal largeMovePercent = DEFAULT_LARGE_MOVE_PERCENT;</span>
+
+    @Override
+    public String getArea() {
+<span class="fc" id="L59">        return Area.ACCURACY.name();</span>
+    }
+
+    @Override
+    public void onTick(Tick tick) {
+        // Idempotent: skip already-processed sequence numbers
+<span class="fc" id="L65">        Long lastSeq = lastSequenceBySymbol.get(tick.getSymbol());</span>
+<span class="fc bfc" id="L66" title="All 4 branches covered.">        if (lastSeq != null &amp;&amp; tick.getSequenceNum() &lt;= lastSeq) {</span>
+<span class="fc" id="L67">            return;</span>
+        }
+
+<span class="fc" id="L70">        totalTicks.incrementAndGet();</span>
+<span class="fc" id="L71">        boolean isValid = true;</span>
+
+        // Rule 1: Price must be positive
+<span class="fc bfc" id="L74" title="All 4 branches covered.">        if (tick.getPrice() == null || tick.getPrice().compareTo(BigDecimal.ZERO) &lt;= 0) {</span>
+<span class="fc" id="L75">            invalidPriceCount.incrementAndGet();</span>
+<span class="fc" id="L76">            isValid = false;</span>
+<span class="fc" id="L77">            log.debug(&quot;Invalid price: {} for symbol={} seq={}&quot;,</span>
+<span class="fc" id="L78">                    tick.getPrice(), tick.getSymbol(), tick.getSequenceNum());</span>
+        }
+
+        // Rule 2: Bid &lt;= Ask (if both present)
+<span class="pc bpc" id="L82" title="1 of 4 branches missed.">        if (tick.getBid() != null &amp;&amp; tick.getAsk() != null</span>
+<span class="fc bfc" id="L83" title="All 2 branches covered.">                &amp;&amp; tick.getBid().compareTo(tick.getAsk()) &gt; 0) {</span>
+<span class="fc" id="L84">            bidAskViolations.incrementAndGet();</span>
+<span class="fc" id="L85">            isValid = false;</span>
+        }
+
+        // Rule 3: Large move detection (&gt; 10% change from previous tick for same symbol)
+<span class="fc bfc" id="L89" title="All 4 branches covered.">        if (tick.getPrice() != null &amp;&amp; tick.getPrice().compareTo(BigDecimal.ZERO) &gt; 0) {</span>
+<span class="fc" id="L90">            BigDecimal prevPrice = lastPriceBySymbol.get(tick.getSymbol());</span>
+
+            // If the feed was down for longer than reconnectGapMs, treat this tick as a
+            // new baseline rather than comparing against a stale pre-disconnect price.
+<span class="fc" id="L94">            Instant lastTime = lastTickTimeBySymbol.get(tick.getSymbol());</span>
+<span class="pc bpc" id="L95" title="2 of 6 branches missed.">            if (prevPrice != null &amp;&amp; lastTime != null &amp;&amp; tick.getReceivedTimestamp() != null) {</span>
+<span class="fc" id="L96">                long gapMs = Duration.between(lastTime, tick.getReceivedTimestamp()).toMillis();</span>
+<span class="fc bfc" id="L97" title="All 2 branches covered.">                if (gapMs &gt;= reconnectGapMs) {</span>
+<span class="fc" id="L98">                    prevPrice = null; // skip spike detection — treat as new baseline</span>
+                }
+            }
+
+<span class="pc bpc" id="L102" title="1 of 4 branches missed.">            if (prevPrice != null &amp;&amp; prevPrice.compareTo(BigDecimal.ZERO) &gt; 0) {</span>
+<span class="fc" id="L103">                BigDecimal change = tick.getPrice().subtract(prevPrice).abs();</span>
+<span class="fc" id="L104">                BigDecimal percentChange = change.divide(prevPrice, MathContext.DECIMAL64);</span>
+<span class="fc bfc" id="L105" title="All 2 branches covered.">                if (percentChange.compareTo(largeMovePercent) &gt; 0) {</span>
+<span class="fc" id="L106">                    largeMoveCount.incrementAndGet();</span>
+<span class="fc" id="L107">                    isValid = false;</span>
+<span class="fc" id="L108">                    log.debug(&quot;Large move: {} → {} ({}%) for symbol={}&quot;,</span>
+<span class="fc" id="L109">                            prevPrice, tick.getPrice(), percentChange, tick.getSymbol());</span>
+                }
+            }
+<span class="fc" id="L112">            lastPriceBySymbol.put(tick.getSymbol(), tick.getPrice());</span>
+        }
+
+<span class="pc bpc" id="L115" title="1 of 2 branches missed.">        if (tick.getReceivedTimestamp() != null) {</span>
+<span class="fc" id="L116">            lastTickTimeBySymbol.put(tick.getSymbol(), tick.getReceivedTimestamp());</span>
+        }
+
+<span class="fc bfc" id="L119" title="All 2 branches covered.">        if (isValid) {</span>
+<span class="fc" id="L120">            validTicks.incrementAndGet();</span>
+        }
+
+<span class="fc" id="L123">        lastSequenceBySymbol.put(tick.getSymbol(), tick.getSequenceNum());</span>
+<span class="fc" id="L124">    }</span>
+
+    @Override
+    public ValidationResult getResult() {
+<span class="fc" id="L128">        long total = totalTicks.get();</span>
+<span class="fc bfc" id="L129" title="All 2 branches covered.">        if (total == 0) {</span>
+<span class="fc" id="L130">            return ValidationResult.pass(Area.ACCURACY,</span>
+                    &quot;No ticks processed yet&quot;, 100.0, passThreshold);
+        }
+
+<span class="fc" id="L134">        double accuracyRate = 100.0 * validTicks.get() / total;</span>
+
+        Status status;
+<span class="fc bfc" id="L137" title="All 2 branches covered.">        if (accuracyRate &gt;= passThreshold) {</span>
+<span class="fc" id="L138">            status = Status.PASS;</span>
+<span class="fc bfc" id="L139" title="All 2 branches covered.">        } else if (accuracyRate &gt;= warnThreshold) {</span>
+<span class="fc" id="L140">            status = Status.WARN;</span>
+        } else {
+<span class="fc" id="L142">            status = Status.FAIL;</span>
+        }
+
+<span class="fc" id="L145">        String message = String.format(</span>
+                &quot;%.2f%% accurate (%d/%d), invalid prices: %d, bid/ask violations: %d, large moves: %d&quot;,
+<span class="fc" id="L147">                accuracyRate, validTicks.get(), total,</span>
+<span class="fc" id="L148">                invalidPriceCount.get(), bidAskViolations.get(), largeMoveCount.get());</span>
+
+<span class="fc" id="L150">        ValidationResult result = new ValidationResult(Area.ACCURACY, status,</span>
+                message, accuracyRate, passThreshold);
+<span class="fc" id="L152">        result.getDetails().put(&quot;totalTicks&quot;, total);</span>
+<span class="fc" id="L153">        result.getDetails().put(&quot;validTicks&quot;, validTicks.get());</span>
+<span class="fc" id="L154">        result.getDetails().put(&quot;invalidPriceCount&quot;, invalidPriceCount.get());</span>
+<span class="fc" id="L155">        result.getDetails().put(&quot;bidAskViolations&quot;, bidAskViolations.get());</span>
+<span class="fc" id="L156">        result.getDetails().put(&quot;largeMoveCount&quot;, largeMoveCount.get());</span>
+<span class="fc" id="L157">        result.getDetails().put(&quot;accuracyRate&quot;, accuracyRate);</span>
+
+<span class="fc" id="L159">        return result;</span>
+    }
+
+    @Override
+    public void reset() {
+<span class="fc" id="L164">        lastPriceBySymbol.clear();</span>
+<span class="fc" id="L165">        lastTickTimeBySymbol.clear();</span>
+<span class="fc" id="L166">        lastSequenceBySymbol.clear();</span>
+<span class="fc" id="L167">        totalTicks.set(0);</span>
+<span class="fc" id="L168">        validTicks.set(0);</span>
+<span class="fc" id="L169">        invalidPriceCount.set(0);</span>
+<span class="fc" id="L170">        bidAskViolations.set(0);</span>
+<span class="fc" id="L171">        largeMoveCount.set(0);</span>
+<span class="fc" id="L172">    }</span>
+
+    @Override
+    public void configure(Map&lt;String, Object&gt; config) {
+<span class="fc bfc" id="L176" title="All 2 branches covered.">        if (config.containsKey(&quot;passThreshold&quot;)) {</span>
+<span class="fc" id="L177">            passThreshold = ((Number) config.get(&quot;passThreshold&quot;)).doubleValue();</span>
+        }
+<span class="fc bfc" id="L179" title="All 2 branches covered.">        if (config.containsKey(&quot;warnThreshold&quot;)) {</span>
+<span class="fc" id="L180">            warnThreshold = ((Number) config.get(&quot;warnThreshold&quot;)).doubleValue();</span>
+        }
+<span class="fc bfc" id="L182" title="All 2 branches covered.">        if (config.containsKey(&quot;largeMovePercent&quot;)) {</span>
+<span class="fc" id="L183">            largeMovePercent = new BigDecimal(config.get(&quot;largeMovePercent&quot;).toString());</span>
+        }
+<span class="pc bpc" id="L185" title="1 of 2 branches missed.">        if (config.containsKey(&quot;reconnectGapMs&quot;)) {</span>
+<span class="nc" id="L186">            reconnectGapMs = ((Number) config.get(&quot;reconnectGapMs&quot;)).longValue();</span>
+        }
+<span class="fc" id="L188">    }</span>
+
+    // --- Visible for testing ---
+
+    long getTotalTicks() {
+<span class="fc" id="L193">        return totalTicks.get();</span>
+    }
+
+    long getValidTicks() {
+<span class="fc" id="L197">        return validTicks.get();</span>
+    }
+
+    long getInvalidPriceCount() {
+<span class="fc" id="L201">        return invalidPriceCount.get();</span>
+    }
+
+    long getBidAskViolations() {
+<span class="fc" id="L205">        return bidAskViolations.get();</span>
+    }
+
+    long getLargeMoveCount() {
+<span class="fc" id="L209">        return largeMoveCount.get();</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

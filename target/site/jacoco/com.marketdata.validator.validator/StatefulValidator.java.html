@@ -1,0 +1,354 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>StatefulValidator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.validator</a> &gt; <span class="el_source">StatefulValidator.java</span></div><h1>StatefulValidator.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.validator;
+
+import com.marketdata.validator.model.Tick;
+import com.marketdata.validator.model.ValidationResult;
+import com.marketdata.validator.model.ValidationResult.Area;
+import com.marketdata.validator.model.ValidationResult.Status;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
+
+import java.math.BigDecimal;
+import java.math.MathContext;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+
+/**
+ * Validates correctness of reconstructed state from streaming updates.
+ *
+ * Blueprint Section 9.8 — Stateful validation of reconstructed market data.
+ *
+ * Why this matters:
+ *   Market data is not just individual ticks — it's STATE EVOLUTION.
+ *   A single incorrect state can cause wrong trading decisions.
+ *   This validator catches bugs that message-level validators miss.
+ *
+ * Per-symbol state maintained:
+ *   - lastPrice, open, high, low (OHLC)
+ *   - cumulativeVolume (non-decreasing within session)
+ *   - VWAP = Σ(price × volume) / Σ(volume)
+ *
+ * Validation rules on each tick:
+ *   1. price &gt; 0
+ *   2. low &lt;= open &lt;= high
+ *   3. low &lt;= lastPrice &lt;= high
+ *   4. cumulativeVolume &gt;= 0 and non-decreasing
+ *   5. VWAP between low and high
+ *   6. No invalid state transitions (e.g., volume going backwards)
+ *
+ * Stale data detection:
+ *   If no tick for a symbol within staleThreshold (default 30s) → mark as stale
+ *
+ * Result:
+ *   PASS: consistencyRate &gt;= 99.99% AND staleSymbols.isEmpty()
+ *   WARN: consistencyRate &gt;= 99.9% OR staleSymbols.size() &lt;= 2
+ *   FAIL: consistencyRate &lt; 99.9% OR staleSymbols.size() &gt; 2
+ */
+@Component
+<span class="fc" id="L52">public class StatefulValidator implements Validator {</span>
+
+<span class="fc" id="L54">    private static final Logger log = LoggerFactory.getLogger(StatefulValidator.class);</span>
+
+    // --- Configurable thresholds ---
+    private static final double DEFAULT_PASS_THRESHOLD = 99.99;
+    private static final double DEFAULT_WARN_THRESHOLD = 99.9;
+    private static final long DEFAULT_STALE_THRESHOLD_MS = 30_000;    // 30 seconds
+    private static final int DEFAULT_MAX_VIOLATIONS = 100;            // Bounded violation buffer
+
+    // --- Per-symbol state ---
+<span class="fc" id="L63">    private final Map&lt;String, SymbolState&gt; stateBySymbol = new ConcurrentHashMap&lt;&gt;();</span>
+
+    // --- Counters ---
+<span class="fc" id="L66">    private final AtomicLong totalChecks = new AtomicLong(0);</span>
+<span class="fc" id="L67">    private final AtomicLong consistentChecks = new AtomicLong(0);</span>
+
+    // --- Bounded violation list (last N) ---
+<span class="fc" id="L70">    private final List&lt;StateViolation&gt; violations = Collections.synchronizedList(new ArrayList&lt;&gt;());</span>
+
+    // Idempotency
+<span class="fc" id="L73">    private final Map&lt;String, Long&gt; lastSequenceBySymbol = new ConcurrentHashMap&lt;&gt;();</span>
+
+    // Configurable
+<span class="fc" id="L76">    private double passThreshold = DEFAULT_PASS_THRESHOLD;</span>
+<span class="fc" id="L77">    private double warnThreshold = DEFAULT_WARN_THRESHOLD;</span>
+<span class="fc" id="L78">    private long staleThresholdMs = DEFAULT_STALE_THRESHOLD_MS;</span>
+<span class="fc" id="L79">    private int maxViolations = DEFAULT_MAX_VIOLATIONS;</span>
+
+    // Clock for time-dependent operations (injectable for testing)
+<span class="fc" id="L82">    private Clock clock = Clock.systemUTC();</span>
+
+    @Override
+    public String getArea() {
+<span class="fc" id="L86">        return Area.STATEFUL.name();</span>
+    }
+
+    @Override
+    public void onTick(Tick tick) {
+<span class="fc" id="L91">        String symbol = tick.getSymbol();</span>
+
+        // Idempotent: skip already-processed sequence numbers
+<span class="fc" id="L94">        Long lastSeq = lastSequenceBySymbol.get(symbol);</span>
+<span class="fc bfc" id="L95" title="All 4 branches covered.">        if (lastSeq != null &amp;&amp; tick.getSequenceNum() &lt;= lastSeq) {</span>
+<span class="fc" id="L96">            return;</span>
+        }
+
+        // Get or create per-symbol state
+<span class="fc" id="L100">        SymbolState state = stateBySymbol.computeIfAbsent(symbol, k -&gt; new SymbolState());</span>
+
+        // Apply tick to state and validate
+<span class="fc" id="L103">        List&lt;String&gt; ruleViolations = applyAndValidate(state, tick);</span>
+
+<span class="fc" id="L105">        totalChecks.incrementAndGet();</span>
+
+<span class="fc bfc" id="L107" title="All 2 branches covered.">        if (ruleViolations.isEmpty()) {</span>
+<span class="fc" id="L108">            consistentChecks.incrementAndGet();</span>
+        } else {
+<span class="fc bfc" id="L110" title="All 2 branches covered.">            for (String rule : ruleViolations) {</span>
+<span class="fc" id="L111">                addViolation(new StateViolation(symbol, clock.instant(), rule));</span>
+<span class="fc" id="L112">            }</span>
+        }
+
+<span class="fc" id="L115">        lastSequenceBySymbol.put(symbol, tick.getSequenceNum());</span>
+<span class="fc" id="L116">    }</span>
+
+    /**
+     * Apply tick data to symbol state and return list of violated rules.
+     * Empty list = all rules pass.
+     */
+    private List&lt;String&gt; applyAndValidate(SymbolState state, Tick tick) {
+<span class="fc" id="L123">        List&lt;String&gt; violated = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L124">        BigDecimal price = tick.getPrice();</span>
+<span class="fc" id="L125">        BigDecimal volume = tick.getVolume();</span>
+
+        // --- Apply state update ---
+
+        // First tick for this symbol → initialize OHLC
+<span class="fc bfc" id="L130" title="All 2 branches covered.">        if (state.open == null) {</span>
+<span class="fc" id="L131">            state.open = price;</span>
+<span class="fc" id="L132">            state.high = price;</span>
+<span class="fc" id="L133">            state.low = price;</span>
+        }
+
+<span class="fc" id="L136">        state.lastPrice = price;</span>
+<span class="fc" id="L137">        state.lastTickTime = clock.instant();</span>
+<span class="fc" id="L138">        state.tickCount++;</span>
+
+        // Update high/low
+<span class="fc bfc" id="L141" title="All 2 branches covered.">        if (price != null) {</span>
+<span class="pc bpc" id="L142" title="1 of 4 branches missed.">            if (state.high == null || price.compareTo(state.high) &gt; 0) {</span>
+<span class="fc" id="L143">                state.high = price;</span>
+            }
+<span class="pc bpc" id="L145" title="1 of 4 branches missed.">            if (state.low == null || price.compareTo(state.low) &lt; 0) {</span>
+<span class="fc" id="L146">                state.low = price;</span>
+            }
+        }
+
+        // Update cumulative volume
+<span class="fc" id="L151">        BigDecimal prevCumulativeVolume = state.cumulativeVolume;</span>
+<span class="pc bpc" id="L152" title="2 of 4 branches missed.">        if (volume != null &amp;&amp; volume.compareTo(BigDecimal.ZERO) &gt;= 0) {</span>
+<span class="fc" id="L153">            state.cumulativeVolume = state.cumulativeVolume.add(volume);</span>
+        }
+
+        // Update VWAP: Σ(price × volume) / Σ(volume)
+<span class="pc bpc" id="L157" title="1 of 6 branches missed.">        if (price != null &amp;&amp; volume != null &amp;&amp; volume.compareTo(BigDecimal.ZERO) &gt; 0) {</span>
+<span class="fc" id="L158">            state.priceVolumeSum = state.priceVolumeSum.add(price.multiply(volume));</span>
+<span class="fc" id="L159">            state.volumeSum = state.volumeSum.add(volume);</span>
+<span class="pc bpc" id="L160" title="1 of 2 branches missed.">            if (state.volumeSum.compareTo(BigDecimal.ZERO) &gt; 0) {</span>
+<span class="fc" id="L161">                state.vwap = state.priceVolumeSum.divide(state.volumeSum, MathContext.DECIMAL64);</span>
+            }
+        }
+
+        // --- Validate state consistency ---
+
+        // Rule 1: price &gt; 0
+<span class="fc bfc" id="L168" title="All 4 branches covered.">        if (price == null || price.compareTo(BigDecimal.ZERO) &lt;= 0) {</span>
+<span class="fc" id="L169">            violated.add(&quot;PRICE_NON_POSITIVE&quot;);</span>
+<span class="fc" id="L170">            log.debug(&quot;Rule violated: PRICE_NON_POSITIVE for {} price={}&quot;, tick.getSymbol(), price);</span>
+        }
+
+        // Rule 2: low &lt;= open &lt;= high
+<span class="pc bpc" id="L174" title="2 of 6 branches missed.">        if (state.low != null &amp;&amp; state.open != null &amp;&amp; state.high != null) {</span>
+<span class="pc bpc" id="L175" title="2 of 4 branches missed.">            if (state.low.compareTo(state.open) &gt; 0 || state.open.compareTo(state.high) &gt; 0) {</span>
+<span class="nc" id="L176">                violated.add(&quot;OHLC_OPEN_OUT_OF_RANGE&quot;);</span>
+            }
+        }
+
+        // Rule 3: low &lt;= lastPrice &lt;= high
+<span class="pc bpc" id="L181" title="2 of 6 branches missed.">        if (state.low != null &amp;&amp; state.lastPrice != null &amp;&amp; state.high != null) {</span>
+<span class="pc bpc" id="L182" title="2 of 4 branches missed.">            if (state.lastPrice.compareTo(state.low) &lt; 0 || state.lastPrice.compareTo(state.high) &gt; 0) {</span>
+<span class="nc" id="L183">                violated.add(&quot;PRICE_OUT_OF_OHLC_RANGE&quot;);</span>
+            }
+        }
+
+        // Rule 4: cumulativeVolume &gt;= 0 and non-decreasing
+<span class="pc bpc" id="L188" title="1 of 2 branches missed.">        if (state.cumulativeVolume.compareTo(BigDecimal.ZERO) &lt; 0) {</span>
+<span class="nc" id="L189">            violated.add(&quot;NEGATIVE_CUMULATIVE_VOLUME&quot;);</span>
+        }
+<span class="pc bpc" id="L191" title="1 of 2 branches missed.">        if (state.cumulativeVolume.compareTo(prevCumulativeVolume) &lt; 0) {</span>
+<span class="nc" id="L192">            violated.add(&quot;VOLUME_DECREASED&quot;);</span>
+        }
+
+        // Rule 5: VWAP between low and high
+<span class="pc bpc" id="L196" title="2 of 6 branches missed.">        if (state.vwap != null &amp;&amp; state.low != null &amp;&amp; state.high != null) {</span>
+<span class="pc bpc" id="L197" title="2 of 4 branches missed.">            if (state.vwap.compareTo(state.low) &lt; 0 || state.vwap.compareTo(state.high) &gt; 0) {</span>
+<span class="nc" id="L198">                violated.add(&quot;VWAP_OUT_OF_RANGE&quot;);</span>
+            }
+        }
+
+<span class="fc" id="L202">        return violated;</span>
+    }
+
+    private void addViolation(StateViolation violation) {
+<span class="fc" id="L206">        violations.add(violation);</span>
+        // Bounded: trim to last maxViolations
+<span class="fc bfc" id="L208" title="All 2 branches covered.">        while (violations.size() &gt; maxViolations) {</span>
+<span class="fc" id="L209">            violations.remove(0);</span>
+        }
+<span class="fc" id="L211">    }</span>
+
+    @Override
+    public ValidationResult getResult() {
+<span class="fc" id="L215">        long total = totalChecks.get();</span>
+<span class="fc bfc" id="L216" title="All 2 branches covered.">        if (total == 0) {</span>
+<span class="fc" id="L217">            return ValidationResult.pass(Area.STATEFUL,</span>
+                    &quot;No ticks processed yet&quot;, 100.0, passThreshold);
+        }
+
+<span class="fc" id="L221">        double consistencyRate = 100.0 * consistentChecks.get() / total;</span>
+
+        // Stale symbol detection
+<span class="fc" id="L224">        Set&lt;String&gt; staleSymbols = getStaleSymbols();</span>
+
+        Status status;
+        String message;
+
+<span class="fc bfc" id="L229" title="All 4 branches covered.">        if (consistencyRate &lt; warnThreshold || staleSymbols.size() &gt; 2) {</span>
+<span class="fc" id="L230">            status = Status.FAIL;</span>
+<span class="fc" id="L231">            message = String.format(&quot;Consistency: %.2f%%, stale: %d symbols&quot;,</span>
+<span class="fc" id="L232">                    consistencyRate, staleSymbols.size());</span>
+<span class="fc bfc" id="L233" title="All 2 branches covered.">        } else if (consistencyRate &lt; passThreshold) {</span>
+<span class="fc" id="L234">            status = Status.WARN;</span>
+<span class="fc" id="L235">            message = String.format(&quot;Consistency: %.2f%%, stale: %d symbols&quot;,</span>
+<span class="fc" id="L236">                    consistencyRate, staleSymbols.size());</span>
+        } else {
+<span class="fc" id="L238">            status = Status.PASS;</span>
+<span class="fc" id="L239">            message = String.format(&quot;Consistency: %.2f%% across %d symbols, %d ticks&quot;,</span>
+<span class="fc" id="L240">                    consistencyRate, stateBySymbol.size(), total);</span>
+        }
+
+<span class="fc" id="L243">        ValidationResult result = new ValidationResult(</span>
+                Area.STATEFUL, status, message, consistencyRate, passThreshold);
+<span class="fc" id="L245">        result.getDetails().put(&quot;consistencyRate&quot;, consistencyRate);</span>
+<span class="fc" id="L246">        result.getDetails().put(&quot;totalChecks&quot;, total);</span>
+<span class="fc" id="L247">        result.getDetails().put(&quot;consistentChecks&quot;, consistentChecks.get());</span>
+<span class="fc" id="L248">        result.getDetails().put(&quot;violationCount&quot;, violations.size());</span>
+<span class="fc" id="L249">        result.getDetails().put(&quot;trackedSymbols&quot;, stateBySymbol.size());</span>
+<span class="fc" id="L250">        result.getDetails().put(&quot;staleSymbolCount&quot;, staleSymbols.size());</span>
+<span class="fc bfc" id="L251" title="All 2 branches covered.">        if (!staleSymbols.isEmpty()) {</span>
+<span class="fc" id="L252">            result.getDetails().put(&quot;staleSymbols&quot;, staleSymbols);</span>
+        }
+<span class="fc bfc" id="L254" title="All 2 branches covered.">        if (!violations.isEmpty()) {</span>
+            // Return last 5 violations as readable strings
+<span class="fc" id="L256">            int start = Math.max(0, violations.size() - 5);</span>
+<span class="fc" id="L257">            List&lt;String&gt; recent = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L258" title="All 2 branches covered.">            for (int i = start; i &lt; violations.size(); i++) {</span>
+<span class="fc" id="L259">                recent.add(violations.get(i).toString());</span>
+            }
+<span class="fc" id="L261">            result.getDetails().put(&quot;recentViolations&quot;, recent);</span>
+        }
+
+<span class="fc" id="L264">        return result;</span>
+    }
+
+    /** Returns set of symbols that haven't received a tick within the stale threshold. */
+    private Set&lt;String&gt; getStaleSymbols() {
+<span class="fc" id="L269">        Set&lt;String&gt; stale = new HashSet&lt;&gt;();</span>
+<span class="fc" id="L270">        Instant now = clock.instant();</span>
+<span class="fc bfc" id="L271" title="All 2 branches covered.">        for (Map.Entry&lt;String, SymbolState&gt; entry : stateBySymbol.entrySet()) {</span>
+<span class="fc" id="L272">            SymbolState s = entry.getValue();</span>
+<span class="pc bpc" id="L273" title="1 of 2 branches missed.">            if (s.lastTickTime != null</span>
+<span class="fc bfc" id="L274" title="All 2 branches covered.">                    &amp;&amp; Duration.between(s.lastTickTime, now).toMillis() &gt; staleThresholdMs) {</span>
+<span class="fc" id="L275">                stale.add(entry.getKey());</span>
+            }
+<span class="fc" id="L277">        }</span>
+<span class="fc" id="L278">        return stale;</span>
+    }
+
+    @Override
+    public void reset() {
+<span class="fc" id="L283">        stateBySymbol.clear();</span>
+<span class="fc" id="L284">        totalChecks.set(0);</span>
+<span class="fc" id="L285">        consistentChecks.set(0);</span>
+<span class="fc" id="L286">        violations.clear();</span>
+<span class="fc" id="L287">        lastSequenceBySymbol.clear();</span>
+<span class="fc" id="L288">    }</span>
+
+    @Override
+    public void configure(Map&lt;String, Object&gt; config) {
+<span class="fc bfc" id="L292" title="All 2 branches covered.">        if (config.containsKey(&quot;passThreshold&quot;)) {</span>
+<span class="fc" id="L293">            passThreshold = ((Number) config.get(&quot;passThreshold&quot;)).doubleValue();</span>
+        }
+<span class="fc bfc" id="L295" title="All 2 branches covered.">        if (config.containsKey(&quot;warnThreshold&quot;)) {</span>
+<span class="fc" id="L296">            warnThreshold = ((Number) config.get(&quot;warnThreshold&quot;)).doubleValue();</span>
+        }
+<span class="fc bfc" id="L298" title="All 2 branches covered.">        if (config.containsKey(&quot;staleThresholdMs&quot;)) {</span>
+<span class="fc" id="L299">            staleThresholdMs = ((Number) config.get(&quot;staleThresholdMs&quot;)).longValue();</span>
+        }
+<span class="fc bfc" id="L301" title="All 2 branches covered.">        if (config.containsKey(&quot;maxViolations&quot;)) {</span>
+<span class="fc" id="L302">            maxViolations = ((Number) config.get(&quot;maxViolations&quot;)).intValue();</span>
+        }
+<span class="fc" id="L304">    }</span>
+
+    // --- Accessors for testing ---
+
+<span class="fc" id="L308">    SymbolState getSymbolState(String symbol) { return stateBySymbol.get(symbol); }</span>
+<span class="fc" id="L309">    long getTotalChecks() { return totalChecks.get(); }</span>
+<span class="fc" id="L310">    long getConsistentChecks() { return consistentChecks.get(); }</span>
+<span class="fc" id="L311">    List&lt;StateViolation&gt; getViolations() { return List.copyOf(violations); }</span>
+<span class="fc" id="L312">    int getTrackedSymbolCount() { return stateBySymbol.size(); }</span>
+<span class="fc" id="L313">    void setClock(Clock clock) { this.clock = clock; }</span>
+
+    // --- Inner classes ---
+
+    /**
+     * Per-symbol OHLC + VWAP state.
+     * Package-private for testing access.
+     */
+<span class="fc" id="L321">    static class SymbolState {</span>
+        BigDecimal lastPrice;
+        BigDecimal open;
+        BigDecimal high;
+        BigDecimal low;
+<span class="fc" id="L326">        BigDecimal cumulativeVolume = BigDecimal.ZERO;</span>
+        BigDecimal vwap;
+<span class="fc" id="L328">        BigDecimal priceVolumeSum = BigDecimal.ZERO;  // For VWAP: Σ(price × volume)</span>
+<span class="fc" id="L329">        BigDecimal volumeSum = BigDecimal.ZERO;       // For VWAP: Σ(volume)</span>
+        Instant lastTickTime;
+<span class="fc" id="L331">        long tickCount = 0;</span>
+    }
+
+    /**
+     * Record of a state violation. Bounded to maxViolations.
+     */
+    static class StateViolation {
+        final String symbol;
+        final Instant timestamp;
+        final String rule;
+
+<span class="fc" id="L342">        StateViolation(String symbol, Instant timestamp, String rule) {</span>
+<span class="fc" id="L343">            this.symbol = symbol;</span>
+<span class="fc" id="L344">            this.timestamp = timestamp;</span>
+<span class="fc" id="L345">            this.rule = rule;</span>
+<span class="fc" id="L346">        }</span>
+
+        @Override
+        public String toString() {
+<span class="fc" id="L350">            return String.format(&quot;[%s] %s: %s&quot;, timestamp, symbol, rule);</span>
+        }
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

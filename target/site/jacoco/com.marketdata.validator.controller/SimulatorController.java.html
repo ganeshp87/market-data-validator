@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SimulatorController.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.controller</a> &gt; <span class="el_source">SimulatorController.java</span></div><h1>SimulatorController.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.controller;
+
+import com.marketdata.validator.feed.FeedManager;
+import com.marketdata.validator.simulator.FailureType;
+import com.marketdata.validator.simulator.LVWRChaosSimulator;
+import com.marketdata.validator.simulator.ScenarioConfig;
+import com.marketdata.validator.simulator.SimulatorMode;
+import com.marketdata.validator.validator.ValidatorEngine;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.time.Instant;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * REST controller for the LVWR_T chaos simulator.
+ *
+ * Blueprint Section 3 — Simulator Endpoints:
+ *   GET  /api/simulator/scenarios          — list all 12 FailureType values
+ *   GET  /api/simulator/status             — status for a running simulator
+ *   PUT  /api/simulator/config             — update ScenarioConfig at runtime
+ */
+@RestController
+@RequestMapping(&quot;/api/simulator&quot;)
+public class SimulatorController {
+
+    private final FeedManager feedManager;
+    private final ValidatorEngine validatorEngine;
+
+<span class="fc" id="L32">    public SimulatorController(FeedManager feedManager, ValidatorEngine validatorEngine) {</span>
+<span class="fc" id="L33">        this.feedManager = feedManager;</span>
+<span class="fc" id="L34">        this.validatorEngine = validatorEngine;</span>
+<span class="fc" id="L35">    }</span>
+
+    /**
+     * GET /api/simulator/scenarios
+     * Returns all 12 injectable FailureType values with name + description.
+     */
+    @GetMapping(&quot;/scenarios&quot;)
+    public ResponseEntity&lt;List&lt;Map&lt;String, String&gt;&gt;&gt; getScenarios() {
+<span class="fc" id="L43">        List&lt;Map&lt;String, String&gt;&gt; scenarios = Arrays.stream(FailureType.values())</span>
+<span class="fc" id="L44">                .map(ft -&gt; Map.of(</span>
+<span class="fc" id="L45">                        &quot;name&quot;, ft.name(),</span>
+<span class="fc" id="L46">                        &quot;description&quot;, ft.getDescription()</span>
+                ))
+<span class="fc" id="L48">                .toList();</span>
+<span class="fc" id="L49">        return ResponseEntity.ok(scenarios);</span>
+    }
+
+    /**
+     * GET /api/simulator/status?connectionId={id}
+     * Returns live stats for the running simulator attached to the given connection.
+     */
+    @GetMapping(&quot;/status&quot;)
+    public ResponseEntity&lt;Map&lt;String, Object&gt;&gt; getStatus(@RequestParam String connectionId) {
+<span class="fc" id="L58">        LVWRChaosSimulator sim = feedManager.getSimulator(connectionId);</span>
+<span class="fc bfc" id="L59" title="All 2 branches covered.">        if (sim == null) {</span>
+<span class="fc" id="L60">            return ResponseEntity.notFound().build();</span>
+        }
+<span class="fc" id="L62">        ScenarioConfig config = sim.getConfig();</span>
+<span class="pc bpc" id="L63" title="1 of 2 branches missed.">        String target = config.getTargetScenario() != null</span>
+<span class="pc" id="L64">                ? config.getTargetScenario().name() : &quot;&quot;;</span>
+<span class="fc" id="L65">        Map&lt;String, Object&gt; status = Map.ofEntries(</span>
+<span class="fc" id="L66">                Map.entry(&quot;connectionId&quot;, connectionId),</span>
+<span class="fc" id="L67">                Map.entry(&quot;running&quot;, sim.isRunning()),</span>
+<span class="fc" id="L68">                Map.entry(&quot;mode&quot;, config.getMode().name()),</span>
+<span class="fc" id="L69">                Map.entry(&quot;targetScenario&quot;, target),</span>
+<span class="fc" id="L70">                Map.entry(&quot;ticksSent&quot;, sim.getTicksSent()),</span>
+<span class="fc" id="L71">                Map.entry(&quot;failuresInjected&quot;, sim.getFailuresInjected()),</span>
+<span class="fc" id="L72">                Map.entry(&quot;ticksPerSecond&quot;, config.getTicksPerSecond()),</span>
+<span class="fc" id="L73">                Map.entry(&quot;failureRate&quot;, config.getFailureRate()),</span>
+<span class="fc" id="L74">                Map.entry(&quot;timestamp&quot;, Instant.now())</span>
+        );
+<span class="fc" id="L76">        return ResponseEntity.ok(status);</span>
+    }
+
+    /**
+     * PUT /api/simulator/config?connectionId={id}
+     * Updates ScenarioConfig for a running simulator at runtime.
+     */
+    @PutMapping(&quot;/config&quot;)
+    public ResponseEntity&lt;Map&lt;String, String&gt;&gt; updateConfig(
+            @RequestParam String connectionId,
+            @RequestBody ScenarioConfig newConfig) {
+<span class="fc" id="L87">        LVWRChaosSimulator sim = feedManager.getSimulator(connectionId);</span>
+<span class="fc bfc" id="L88" title="All 2 branches covered.">        if (sim == null) {</span>
+<span class="fc" id="L89">            return ResponseEntity.notFound().build();</span>
+        }
+        // Sanitise rate so it stays in [0.0, 1.0]
+<span class="fc" id="L92">        double rate = Math.max(0.0, Math.min(1.0, newConfig.getFailureRate()));</span>
+<span class="fc" id="L93">        newConfig.setFailureRate(rate);</span>
+
+        // When the mode changes (e.g. CHAOS → CLEAN) reset all validator state so
+        // stale spike-counts and throughput averages from the previous mode do not
+        // contaminate the new mode's dashboard and alert thresholds (Fix 3).
+<span class="fc bfc" id="L98" title="All 2 branches covered.">        if (newConfig.getMode() != sim.getConfig().getMode()) {</span>
+<span class="fc" id="L99">            validatorEngine.reset();</span>
+        }
+
+<span class="fc" id="L102">        sim.updateConfig(newConfig);</span>
+<span class="fc" id="L103">        return ResponseEntity.ok(Map.of(</span>
+                &quot;status&quot;, &quot;updated&quot;,
+                &quot;connectionId&quot;, connectionId,
+<span class="fc" id="L106">                &quot;mode&quot;, newConfig.getMode().name()</span>
+        ));
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

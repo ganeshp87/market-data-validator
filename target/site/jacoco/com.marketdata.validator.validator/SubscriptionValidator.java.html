@@ -1,0 +1,255 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SubscriptionValidator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.validator</a> &gt; <span class="el_source">SubscriptionValidator.java</span></div><h1>SubscriptionValidator.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.validator;
+
+import com.marketdata.validator.model.Tick;
+import com.marketdata.validator.model.ValidationResult;
+import com.marketdata.validator.model.ValidationResult.Area;
+import com.marketdata.validator.model.ValidationResult.Status;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
+
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+
+/**
+ * Verifies that subscribe/unsubscribe operations work correctly.
+ *
+ * Blueprint Section 9.7:
+ *   1. When subscribe sent → first tick received within 5 seconds?
+ *   2. When unsubscribe sent → no more ticks within 3 seconds?
+ *   3. All subscribed symbols receiving data?
+ *   4. No data for unsubscribed symbols?
+ *
+ * State tracked:
+ *   - subscribedSymbols: Set&lt;String&gt;       — symbols we expect to receive
+ *   - activeSymbols: Set&lt;String&gt;           — symbols with recent ticks
+ *   - subscribeLatencies: Map&lt;String, Duration&gt;  — time from subscribe to first tick
+ *   - leakyUnsubscribes: Set&lt;String&gt;       — still getting data after unsub
+ *
+ * Result:
+ *   PASS: activeSymbols == subscribedSymbols AND leakyUnsubscribes.isEmpty()
+ *   WARN: some subscribed symbols not yet active
+ *   FAIL: leakyUnsubscribes NOT empty OR most symbols inactive
+ *
+ * Hybrid validator: event-driven (subscribe/unsubscribe) + tick-driven (tracking active symbols).
+ */
+@Component
+<span class="fc" id="L42">public class SubscriptionValidator implements Validator {</span>
+
+<span class="fc" id="L44">    private static final Logger log = LoggerFactory.getLogger(SubscriptionValidator.class);</span>
+    private static final long DEFAULT_SUBSCRIBE_TIMEOUT_MS = 5_000;    // 5 seconds
+    private static final long DEFAULT_UNSUBSCRIBE_GRACE_MS = 3_000;    // 3 seconds
+    private static final long DEFAULT_ACTIVE_THRESHOLD_MS = 30_000;    // 30 seconds — stale if no tick
+
+    // --- Subscription state ---
+<span class="fc" id="L50">    private final Set&lt;String&gt; subscribedSymbols = ConcurrentHashMap.newKeySet();</span>
+<span class="fc" id="L51">    private final Set&lt;String&gt; activeSymbols = ConcurrentHashMap.newKeySet();</span>
+<span class="fc" id="L52">    private final Map&lt;String, Instant&gt; subscribeTimeBySymbol = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L53">    private final Map&lt;String, Instant&gt; lastTickTimeBySymbol = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L54">    private final Map&lt;String, Long&gt; subscribeLatencyMs = new ConcurrentHashMap&lt;&gt;();</span>
+
+    // Unsubscribe tracking
+<span class="fc" id="L57">    private final Map&lt;String, Instant&gt; unsubscribeTimeBySymbol = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L58">    private final Set&lt;String&gt; leakyUnsubscribes = ConcurrentHashMap.newKeySet();</span>
+
+    // Idempotency
+<span class="fc" id="L61">    private final Map&lt;String, Long&gt; lastSequenceBySymbol = new ConcurrentHashMap&lt;&gt;();</span>
+
+    // Counters
+<span class="fc" id="L64">    private final AtomicLong totalTicks = new AtomicLong(0);</span>
+<span class="fc" id="L65">    private final AtomicLong subscribeEvents = new AtomicLong(0);</span>
+<span class="fc" id="L66">    private final AtomicLong unsubscribeEvents = new AtomicLong(0);</span>
+
+    // Configurable thresholds
+<span class="fc" id="L69">    private long subscribeTimeoutMs = DEFAULT_SUBSCRIBE_TIMEOUT_MS;</span>
+<span class="fc" id="L70">    private long unsubscribeGraceMs = DEFAULT_UNSUBSCRIBE_GRACE_MS;</span>
+<span class="fc" id="L71">    private long activeThresholdMs = DEFAULT_ACTIVE_THRESHOLD_MS;</span>
+
+    // Clock for time-dependent operations (injectable for testing)
+<span class="fc" id="L74">    private Clock clock = Clock.systemUTC();</span>
+
+    @Override
+    public String getArea() {
+<span class="fc" id="L78">        return Area.SUBSCRIPTION.name();</span>
+    }
+
+    /**
+     * Track active symbols from incoming ticks.
+     * Also detects leaky unsubscribes (ticks arriving after unsub).
+     */
+    @Override
+    public void onTick(Tick tick) {
+<span class="fc" id="L87">        String symbol = tick.getSymbol();</span>
+
+        // Idempotent: skip already-processed sequence numbers
+<span class="fc" id="L90">        Long lastSeq = lastSequenceBySymbol.get(symbol);</span>
+<span class="fc bfc" id="L91" title="All 4 branches covered.">        if (lastSeq != null &amp;&amp; tick.getSequenceNum() &lt;= lastSeq) {</span>
+<span class="fc" id="L92">            return;</span>
+        }
+
+<span class="fc" id="L95">        totalTicks.incrementAndGet();</span>
+<span class="fc" id="L96">        lastSequenceBySymbol.put(symbol, tick.getSequenceNum());</span>
+
+<span class="fc" id="L98">        Instant now = clock.instant();</span>
+<span class="fc" id="L99">        lastTickTimeBySymbol.put(symbol, now);</span>
+<span class="fc" id="L100">        activeSymbols.add(symbol);</span>
+
+        // Record subscribe latency: time from subscribe event to first tick
+<span class="fc" id="L103">        Instant subTime = subscribeTimeBySymbol.get(symbol);</span>
+<span class="fc bfc" id="L104" title="All 4 branches covered.">        if (subTime != null &amp;&amp; !subscribeLatencyMs.containsKey(symbol)) {</span>
+<span class="fc" id="L105">            long latency = Duration.between(subTime, now).toMillis();</span>
+<span class="fc" id="L106">            subscribeLatencyMs.put(symbol, latency);</span>
+<span class="fc" id="L107">            log.debug(&quot;Subscribe latency for {}: {}ms&quot;, symbol, latency);</span>
+        }
+
+        // Leaky unsubscribe detection: tick arriving after unsubscribe
+<span class="fc" id="L111">        Instant unsubTime = unsubscribeTimeBySymbol.get(symbol);</span>
+<span class="fc bfc" id="L112" title="All 2 branches covered.">        if (unsubTime != null) {</span>
+<span class="fc" id="L113">            long msSinceUnsub = Duration.between(unsubTime, now).toMillis();</span>
+<span class="fc bfc" id="L114" title="All 2 branches covered.">            if (msSinceUnsub &gt; unsubscribeGraceMs) {</span>
+                // Well past the grace period — this is a leak
+<span class="fc" id="L116">                leakyUnsubscribes.add(symbol);</span>
+<span class="fc" id="L117">                log.warn(&quot;Leaky unsubscribe: {} still receiving ticks {}ms after unsub&quot;,</span>
+<span class="fc" id="L118">                        symbol, msSinceUnsub);</span>
+            }
+            // Within grace period, ticks are expected (in-flight messages)
+        }
+<span class="fc" id="L122">    }</span>
+
+    // --- Event-driven methods (called by FeedManager/FeedConnection) ---
+
+    /**
+     * Record that a symbol was subscribed.
+     */
+    public void onSubscribe(String symbol) {
+<span class="fc" id="L130">        subscribedSymbols.add(symbol);</span>
+<span class="fc" id="L131">        subscribeTimeBySymbol.put(symbol, clock.instant());</span>
+        // Clear any previous unsubscribe state for this symbol
+<span class="fc" id="L133">        unsubscribeTimeBySymbol.remove(symbol);</span>
+<span class="fc" id="L134">        leakyUnsubscribes.remove(symbol);</span>
+<span class="fc" id="L135">        subscribeEvents.incrementAndGet();</span>
+<span class="fc" id="L136">        log.debug(&quot;Subscribe recorded for {}&quot;, symbol);</span>
+<span class="fc" id="L137">    }</span>
+
+    /**
+     * Record that a symbol was unsubscribed.
+     */
+    public void onUnsubscribe(String symbol) {
+<span class="fc" id="L143">        subscribedSymbols.remove(symbol);</span>
+<span class="fc" id="L144">        unsubscribeTimeBySymbol.put(symbol, clock.instant());</span>
+<span class="fc" id="L145">        unsubscribeEvents.incrementAndGet();</span>
+<span class="fc" id="L146">        log.debug(&quot;Unsubscribe recorded for {}&quot;, symbol);</span>
+<span class="fc" id="L147">    }</span>
+
+    @Override
+    public ValidationResult getResult() {
+<span class="fc" id="L151">        int subscribed = subscribedSymbols.size();</span>
+<span class="fc" id="L152">        int active = 0;</span>
+<span class="fc" id="L153">        Instant now = clock.instant();</span>
+
+        // Count currently active symbols (within threshold)
+<span class="fc bfc" id="L156" title="All 2 branches covered.">        for (String symbol : subscribedSymbols) {</span>
+<span class="fc" id="L157">            Instant lastTick = lastTickTimeBySymbol.get(symbol);</span>
+<span class="fc bfc" id="L158" title="All 4 branches covered.">            if (lastTick != null &amp;&amp; Duration.between(lastTick, now).toMillis() &lt; activeThresholdMs) {</span>
+<span class="fc" id="L159">                active++;</span>
+            }
+<span class="fc" id="L161">        }</span>
+
+        // Check for timed-out subscriptions (subscribed but no tick within timeout)
+<span class="fc" id="L164">        int timedOut = 0;</span>
+<span class="fc bfc" id="L165" title="All 2 branches covered.">        for (String symbol : subscribedSymbols) {</span>
+<span class="fc" id="L166">            Instant subTime = subscribeTimeBySymbol.get(symbol);</span>
+<span class="pc bpc" id="L167" title="1 of 4 branches missed.">            if (subTime != null &amp;&amp; !subscribeLatencyMs.containsKey(symbol)) {</span>
+<span class="fc" id="L168">                long waitMs = Duration.between(subTime, now).toMillis();</span>
+<span class="fc bfc" id="L169" title="All 2 branches covered.">                if (waitMs &gt; subscribeTimeoutMs) {</span>
+<span class="fc" id="L170">                    timedOut++;</span>
+                }
+            }
+<span class="fc" id="L173">        }</span>
+
+<span class="fc" id="L175">        int leaky = leakyUnsubscribes.size();</span>
+
+        Status status;
+        String message;
+
+<span class="fc bfc" id="L180" title="All 6 branches covered.">        if (subscribed == 0 &amp;&amp; leaky == 0 &amp;&amp; totalTicks.get() == 0) {</span>
+<span class="fc" id="L181">            return ValidationResult.pass(Area.SUBSCRIPTION,</span>
+                    &quot;No subscriptions yet&quot;, 100.0, 100.0);
+        }
+
+<span class="fc bfc" id="L185" title="All 2 branches covered.">        if (leaky &gt; 0) {</span>
+<span class="fc" id="L186">            status = Status.FAIL;</span>
+<span class="fc" id="L187">            message = String.format(&quot;Leaky unsubscribes: %s&quot;, leakyUnsubscribes);</span>
+<span class="fc bfc" id="L188" title="All 6 branches covered.">        } else if (subscribed &gt; 0 &amp;&amp; active == 0 &amp;&amp; totalTicks.get() &gt; 0) {</span>
+<span class="fc" id="L189">            status = Status.FAIL;</span>
+<span class="fc" id="L190">            message = String.format(&quot;All %d subscribed symbols inactive&quot;, subscribed);</span>
+<span class="fc bfc" id="L191" title="All 6 branches covered.">        } else if (timedOut &gt; 0 || (subscribed &gt; 0 &amp;&amp; active &lt; subscribed)) {</span>
+<span class="fc" id="L192">            status = Status.WARN;</span>
+<span class="fc" id="L193">            message = String.format(&quot;Active: %d/%d subscribed, timedOut: %d&quot;,</span>
+<span class="fc" id="L194">                    active, subscribed, timedOut);</span>
+        } else {
+<span class="fc" id="L196">            status = Status.PASS;</span>
+<span class="fc" id="L197">            message = String.format(&quot;All %d subscribed symbols active&quot;, subscribed);</span>
+        }
+
+<span class="fc bfc" id="L200" title="All 2 branches covered.">        double metric = subscribed == 0 ? 100.0 : 100.0 * active / subscribed;</span>
+
+<span class="fc" id="L202">        ValidationResult result = new ValidationResult(Area.SUBSCRIPTION, status,</span>
+                message, metric, 100.0);
+<span class="fc" id="L204">        result.getDetails().put(&quot;subscribedSymbols&quot;, Set.copyOf(subscribedSymbols));</span>
+<span class="fc" id="L205">        result.getDetails().put(&quot;activeCount&quot;, active);</span>
+<span class="fc" id="L206">        result.getDetails().put(&quot;subscribedCount&quot;, subscribed);</span>
+<span class="fc" id="L207">        result.getDetails().put(&quot;leakyUnsubscribes&quot;, Set.copyOf(leakyUnsubscribes));</span>
+<span class="fc" id="L208">        result.getDetails().put(&quot;timedOutCount&quot;, timedOut);</span>
+<span class="fc" id="L209">        result.getDetails().put(&quot;subscribeEvents&quot;, subscribeEvents.get());</span>
+<span class="fc" id="L210">        result.getDetails().put(&quot;unsubscribeEvents&quot;, unsubscribeEvents.get());</span>
+<span class="fc" id="L211">        result.getDetails().put(&quot;totalTicks&quot;, totalTicks.get());</span>
+
+<span class="fc" id="L213">        return result;</span>
+    }
+
+    @Override
+    public void reset() {
+<span class="fc" id="L218">        subscribedSymbols.clear();</span>
+<span class="fc" id="L219">        activeSymbols.clear();</span>
+<span class="fc" id="L220">        subscribeTimeBySymbol.clear();</span>
+<span class="fc" id="L221">        lastTickTimeBySymbol.clear();</span>
+<span class="fc" id="L222">        subscribeLatencyMs.clear();</span>
+<span class="fc" id="L223">        unsubscribeTimeBySymbol.clear();</span>
+<span class="fc" id="L224">        leakyUnsubscribes.clear();</span>
+<span class="fc" id="L225">        lastSequenceBySymbol.clear();</span>
+<span class="fc" id="L226">        totalTicks.set(0);</span>
+<span class="fc" id="L227">        subscribeEvents.set(0);</span>
+<span class="fc" id="L228">        unsubscribeEvents.set(0);</span>
+<span class="fc" id="L229">    }</span>
+
+    @Override
+    public void configure(Map&lt;String, Object&gt; config) {
+<span class="fc bfc" id="L233" title="All 2 branches covered.">        if (config.containsKey(&quot;subscribeTimeoutMs&quot;)) {</span>
+<span class="fc" id="L234">            subscribeTimeoutMs = ((Number) config.get(&quot;subscribeTimeoutMs&quot;)).longValue();</span>
+        }
+<span class="fc bfc" id="L236" title="All 2 branches covered.">        if (config.containsKey(&quot;unsubscribeGraceMs&quot;)) {</span>
+<span class="fc" id="L237">            unsubscribeGraceMs = ((Number) config.get(&quot;unsubscribeGraceMs&quot;)).longValue();</span>
+        }
+<span class="pc bpc" id="L239" title="1 of 2 branches missed.">        if (config.containsKey(&quot;activeThresholdMs&quot;)) {</span>
+<span class="fc" id="L240">            activeThresholdMs = ((Number) config.get(&quot;activeThresholdMs&quot;)).longValue();</span>
+        }
+<span class="fc" id="L242">    }</span>
+
+    // --- Accessors for testing ---
+
+<span class="fc" id="L246">    Set&lt;String&gt; getSubscribedSymbols() { return Set.copyOf(subscribedSymbols); }</span>
+<span class="fc" id="L247">    Set&lt;String&gt; getActiveSymbols() { return Set.copyOf(activeSymbols); }</span>
+<span class="fc" id="L248">    Set&lt;String&gt; getLeakyUnsubscribes() { return Set.copyOf(leakyUnsubscribes); }</span>
+<span class="fc" id="L249">    Map&lt;String, Long&gt; getSubscribeLatencies() { return Map.copyOf(subscribeLatencyMs); }</span>
+<span class="fc" id="L250">    long getTotalTicks() { return totalTicks.get(); }</span>
+<span class="fc" id="L251">    long getSubscribeEventCount() { return subscribeEvents.get(); }</span>
+<span class="fc" id="L252">    long getUnsubscribeEventCount() { return unsubscribeEvents.get(); }</span>
+<span class="fc" id="L253">    void setClock(Clock clock) { this.clock = clock; }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

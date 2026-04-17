@@ -1,0 +1,401 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ValidatorEngine.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.validator</a> &gt; <span class="el_source">ValidatorEngine.java</span></div><h1>ValidatorEngine.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.validator;
+
+import com.marketdata.validator.model.Tick;
+import com.marketdata.validator.model.ValidationResult;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
+import net.logstash.logback.argument.StructuredArguments;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.stereotype.Component;
+
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
+import java.util.stream.Collectors;
+
+/**
+ * Orchestrator that holds all validators and fans out each tick to all of them.
+ *
+ * Blueprint Section 5.3:
+ *   - Holds all 9 validators (injected, not hardcoded)
+ *   - Fans out each tick to all validators
+ *   - Provides aggregated ValidationSummary (all results)
+ *   - Publishes updates when results change
+ *   - Supports reset and configuration propagation
+ */
+@Component
+public class ValidatorEngine {
+
+<span class="fc" id="L37">    private static final Logger log = LoggerFactory.getLogger(ValidatorEngine.class);</span>
+
+    // Throttle listener notifications to avoid overwhelming SSE and stalling the
+    // BackpressureQueue consumer thread (Fix 9 — completeness false positives).
+    private static final long NOTIFY_INTERVAL_MS = 250;
+
+    private final List&lt;Validator&gt; validators;
+    private final FieldCompletenessValidator fieldGate;
+<span class="fc" id="L45">    private final List&lt;Consumer&lt;List&lt;ValidationResult&gt;&gt;&gt; listeners = new CopyOnWriteArrayList&lt;&gt;();</span>
+<span class="fc" id="L46">    private final List&lt;BiConsumer&lt;String, List&lt;ValidationResult&gt;&gt;&gt; perFeedListeners = new CopyOnWriteArrayList&lt;&gt;();</span>
+<span class="fc" id="L47">    private final AtomicLong tickCount = new AtomicLong(0);</span>
+<span class="fc" id="L48">    private volatile long lastNotifyTimeMs = 0;</span>
+    private ScheduledExecutorService throughputScheduler;
+
+    // Per-feed validation scoping (Fix 8): feedId → isolated validator set + tick counter
+<span class="fc" id="L52">    private final ConcurrentHashMap&lt;String, List&lt;Validator&gt;&gt; feedValidators = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L53">    private final ConcurrentHashMap&lt;String, AtomicLong&gt; feedTickCounts = new ConcurrentHashMap&lt;&gt;();</span>
+
+    @org.springframework.beans.factory.annotation.Autowired
+<span class="fc" id="L56">    public ValidatorEngine(List&lt;Validator&gt; validators, FieldCompletenessValidator fieldGate) {</span>
+<span class="fc" id="L57">        this.validators = List.copyOf(validators); // Defensive copy — immutable after construction</span>
+<span class="fc" id="L58">        this.fieldGate = fieldGate;</span>
+<span class="fc" id="L59">    }</span>
+
+    /**
+     * Convenience constructor for tests — no field-completeness gate.
+     */
+    public ValidatorEngine(List&lt;Validator&gt; validators) {
+<span class="fc" id="L65">        this(validators, null);</span>
+<span class="fc" id="L66">    }</span>
+
+    /**
+     * Start a 1-second timer that drives ThroughputValidator's per-second snapshot.
+     * Also ticks per-feed ThroughputValidators so scoped throughput is non-zero (Fix 9b).
+     * Only runs in Spring context (tests create ValidatorEngine directly, skipping this).
+     */
+    @PostConstruct
+    void startThroughputTimer() {
+<span class="fc" id="L75">        validators.stream()</span>
+<span class="fc" id="L76">                .filter(v -&gt; v instanceof ThroughputValidator)</span>
+<span class="fc" id="L77">                .map(v -&gt; (ThroughputValidator) v)</span>
+<span class="fc" id="L78">                .findFirst()</span>
+<span class="fc" id="L79">                .ifPresent(globalTv -&gt; {</span>
+<span class="fc" id="L80">                    throughputScheduler = Executors.newSingleThreadScheduledExecutor(r -&gt; {</span>
+<span class="fc" id="L81">                        Thread t = new Thread(r, &quot;throughput-timer&quot;);</span>
+<span class="fc" id="L82">                        t.setDaemon(true);</span>
+<span class="fc" id="L83">                        return t;</span>
+                    });
+<span class="fc" id="L85">                    throughputScheduler.scheduleAtFixedRate(() -&gt; {</span>
+<span class="fc" id="L86">                        globalTv.tick();</span>
+                        // Drive per-feed ThroughputValidators too (Fix 9b)
+<span class="fc bfc" id="L88" title="All 2 branches covered.">                        for (List&lt;Validator&gt; perFeedVals : feedValidators.values()) {</span>
+<span class="fc bfc" id="L89" title="All 2 branches covered.">                            for (Validator v : perFeedVals) {</span>
+<span class="fc bfc" id="L90" title="All 2 branches covered.">                                if (v instanceof ThroughputValidator tv) {</span>
+<span class="fc" id="L91">                                    tv.tick();</span>
+                                }
+<span class="fc" id="L93">                            }</span>
+<span class="fc" id="L94">                        }</span>
+<span class="fc" id="L95">                    }, 1, 1, TimeUnit.SECONDS);</span>
+<span class="fc" id="L96">                    log.info(&quot;ThroughputValidator timer started (1s interval, global + per-feed)&quot;);</span>
+<span class="fc" id="L97">                });</span>
+<span class="fc" id="L98">    }</span>
+
+    @PreDestroy
+    void stopThroughputTimer() {
+<span class="nc bnc" id="L102" title="All 2 branches missed.">        if (throughputScheduler != null) {</span>
+<span class="nc" id="L103">            throughputScheduler.shutdownNow();</span>
+        }
+<span class="nc" id="L105">    }</span>
+
+    /**
+     * Process a single tick through all validators.
+     * Called for every tick from every feed.
+     * Fans out to both the global validator set and the per-feed validator set (Fix 8).
+     */
+    public void onTick(Tick tick) {
+        // Pre-validation gate: reject ticks with missing required fields
+<span class="fc bfc" id="L114" title="All 4 branches covered.">        if (fieldGate != null &amp;&amp; !fieldGate.isValid(tick)) {</span>
+<span class="fc" id="L115">            return;</span>
+        }
+
+<span class="fc" id="L118">        tickCount.incrementAndGet();</span>
+
+        // Assign traceId for end-to-end tracing through the validation pipeline
+<span class="pc bpc" id="L121" title="1 of 2 branches missed.">        if (tick.getTraceId() == null) {</span>
+<span class="fc" id="L122">            tick.setTraceId(java.util.UUID.randomUUID().toString());</span>
+        }
+
+        // Global validators
+<span class="fc bfc" id="L126" title="All 2 branches covered.">        for (Validator v : validators) {</span>
+            try {
+<span class="fc" id="L128">                v.onTick(tick);</span>
+<span class="fc" id="L129">                logValidationEvent(v, tick);</span>
+<span class="fc" id="L130">            } catch (Exception e) {</span>
+<span class="fc" id="L131">                log.error(&quot;Validator {} threw exception on tick seq={}: {}&quot;,</span>
+<span class="fc" id="L132">                        v.getArea(), tick.getSequenceNum(), e.getMessage(), e);</span>
+<span class="fc" id="L133">            }</span>
+<span class="fc" id="L134">        }</span>
+
+        // Per-feed validators (Fix 8) — lazily created on first tick per feed
+<span class="fc" id="L137">        String feedId = tick.getFeedId();</span>
+<span class="fc" id="L138">        List&lt;Validator&gt; perFeed = null;</span>
+<span class="pc bpc" id="L139" title="2 of 4 branches missed.">        if (feedId != null &amp;&amp; !feedId.isBlank()) {</span>
+<span class="fc" id="L140">            feedTickCounts.computeIfAbsent(feedId, k -&gt; new AtomicLong(0)).incrementAndGet();</span>
+<span class="fc" id="L141">            perFeed = feedValidators.computeIfAbsent(feedId, k -&gt; createValidatorSet());</span>
+<span class="fc bfc" id="L142" title="All 2 branches covered.">            for (Validator v : perFeed) {</span>
+                try {
+<span class="fc" id="L144">                    v.onTick(tick);</span>
+<span class="fc" id="L145">                } catch (Exception e) {</span>
+<span class="fc" id="L146">                    log.error(&quot;Per-feed validator {} threw on tick seq={} feedId={}: {}&quot;,</span>
+<span class="fc" id="L147">                            v.getArea(), tick.getSequenceNum(), feedId, e.getMessage(), e);</span>
+<span class="fc" id="L148">                }</span>
+<span class="fc" id="L149">            }</span>
+        }
+
+        // Throttle listener notifications to avoid stalling the consumer thread.
+        // SSE serialisation + send on every tick caused BackpressureQueue drops
+        // which created false completeness gaps (Fix 9).
+<span class="fc" id="L155">        long now = System.currentTimeMillis();</span>
+<span class="fc bfc" id="L156" title="All 2 branches covered.">        if (now - lastNotifyTimeMs &gt;= NOTIFY_INTERVAL_MS) {</span>
+<span class="fc" id="L157">            lastNotifyTimeMs = now;</span>
+<span class="fc" id="L158">            notifyListeners();</span>
+<span class="pc bpc" id="L159" title="1 of 2 branches missed.">            if (perFeed != null) {</span>
+<span class="fc" id="L160">                notifyPerFeedListeners(feedId, perFeed);</span>
+            }
+        }
+<span class="fc" id="L163">    }</span>
+
+    /**
+     * Get results from all validators as a list.
+     */
+    public List&lt;ValidationResult&gt; getResults() {
+<span class="fc" id="L169">        return validators.stream()</span>
+<span class="fc" id="L170">                .map(Validator::getResult)</span>
+<span class="fc" id="L171">                .collect(Collectors.toList());</span>
+    }
+
+    /**
+     * Get a map of area → result for quick lookup.
+     */
+    public Map&lt;String, ValidationResult&gt; getResultsByArea() {
+<span class="fc" id="L178">        return validators.stream()</span>
+<span class="fc" id="L179">                .collect(Collectors.toMap(Validator::getArea, Validator::getResult));</span>
+    }
+
+    /**
+     * Get results for a specific feed (Fix 8).
+     * Returns an empty list if no ticks have been seen for this feedId.
+     */
+    public List&lt;ValidationResult&gt; getResults(String feedId) {
+<span class="fc" id="L187">        List&lt;Validator&gt; perFeed = feedValidators.get(feedId);</span>
+<span class="fc bfc" id="L188" title="All 2 branches covered.">        if (perFeed == null) return Collections.emptyList();</span>
+<span class="fc" id="L189">        return perFeed.stream().map(Validator::getResult).collect(Collectors.toList());</span>
+    }
+
+    /**
+     * Get area → result map for a specific feed (Fix 8).
+     * Returns an empty map if no ticks have been seen for this feedId.
+     */
+    public Map&lt;String, ValidationResult&gt; getResultsByArea(String feedId) {
+<span class="fc" id="L197">        List&lt;Validator&gt; perFeed = feedValidators.get(feedId);</span>
+<span class="fc bfc" id="L198" title="All 2 branches covered.">        if (perFeed == null) return Collections.emptyMap();</span>
+<span class="fc" id="L199">        return perFeed.stream().collect(Collectors.toMap(Validator::getArea, Validator::getResult));</span>
+    }
+
+    /**
+     * Get the tick count for a specific feed (Fix 8).
+     */
+    public long getTickCount(String feedId) {
+<span class="nc" id="L206">        AtomicLong counter = feedTickCounts.get(feedId);</span>
+<span class="nc bnc" id="L207" title="All 2 branches missed.">        return counter != null ? counter.get() : 0;</span>
+    }
+
+    /**
+     * Get the set of feedIds that have been seen so far (Fix 8).
+     */
+    public Set&lt;String&gt; getKnownFeedIds() {
+<span class="nc" id="L214">        return Set.copyOf(feedValidators.keySet());</span>
+    }
+
+    /**
+     * Reset all validators — clears all state (global + per-feed).
+     */
+    public void reset() {
+<span class="fc" id="L221">        validators.forEach(Validator::reset);</span>
+<span class="fc" id="L222">        tickCount.set(0);</span>
+<span class="fc" id="L223">        lastNotifyTimeMs = 0;</span>
+<span class="fc" id="L224">        feedValidators.clear();</span>
+<span class="fc" id="L225">        feedTickCounts.clear();</span>
+<span class="fc bfc" id="L226" title="All 2 branches covered.">        if (fieldGate != null) fieldGate.reset();</span>
+<span class="fc" id="L227">        log.info(&quot;All validators reset (global + per-feed)&quot;);</span>
+<span class="fc" id="L228">    }</span>
+
+    /**
+     * Alias for {@link #reset()} — used by SimulatorController to signal a clean session start.
+     */
+    public void resetAllValidatorState() {
+<span class="nc" id="L234">        reset();</span>
+<span class="nc" id="L235">    }</span>
+
+    /**
+     * Propagate configuration to all validators.
+     */
+    public void configure(Map&lt;String, Object&gt; config) {
+<span class="fc" id="L241">        validators.forEach(v -&gt; v.configure(config));</span>
+<span class="fc" id="L242">    }</span>
+
+    /**
+     * Propagate configuration to a specific validator by area name.
+     */
+    public void configure(String area, Map&lt;String, Object&gt; config) {
+<span class="fc" id="L248">        validators.stream()</span>
+<span class="fc" id="L249">                .filter(v -&gt; v.getArea().equals(area))</span>
+<span class="fc" id="L250">                .findFirst()</span>
+<span class="fc" id="L251">                .ifPresent(v -&gt; v.configure(config));</span>
+<span class="fc" id="L252">    }</span>
+
+    /**
+     * Register a listener that's notified after every tick is processed.
+     */
+    public void addListener(Consumer&lt;List&lt;ValidationResult&gt;&gt; listener) {
+<span class="fc" id="L258">        listeners.add(listener);</span>
+<span class="fc" id="L259">    }</span>
+
+    /**
+     * Register a per-feed listener that receives (feedId, results) after each throttle window.
+     * Used by AlertGenerator to generate alerts from per-feed validator failures.
+     */
+    public void addPerFeedListener(BiConsumer&lt;String, List&lt;ValidationResult&gt;&gt; listener) {
+<span class="fc" id="L266">        perFeedListeners.add(listener);</span>
+<span class="fc" id="L267">    }</span>
+
+    /**
+     * Remove a previously registered listener.
+     */
+    public void removeListener(Consumer&lt;List&lt;ValidationResult&gt;&gt; listener) {
+<span class="fc" id="L273">        listeners.remove(listener);</span>
+<span class="fc" id="L274">    }</span>
+
+    /**
+     * Get total number of ticks processed (passed field-completeness gate).
+     */
+    public long getTickCount() {
+<span class="fc" id="L280">        return tickCount.get();</span>
+    }
+
+    /**
+     * Get count of ticks rejected by the pre-validation field-completeness gate.
+     */
+    public long getRejectedCount() {
+<span class="fc bfc" id="L287" title="All 2 branches covered.">        return fieldGate != null ? fieldGate.getRejectedCount() : 0;</span>
+    }
+
+    /**
+     * Get count of duplicate ticks detected by the ordering validator.
+     */
+    public long getDuplicateCount() {
+<span class="fc" id="L294">        return validators.stream()</span>
+<span class="fc" id="L295">                .filter(v -&gt; v instanceof OrderingValidator)</span>
+<span class="fc" id="L296">                .map(v -&gt; ((OrderingValidator) v).getDuplicateCount())</span>
+<span class="fc" id="L297">                .findFirst()</span>
+<span class="fc" id="L298">                .orElse(0L);</span>
+    }
+
+    /**
+     * Get count of registered validators.
+     */
+    public int getValidatorCount() {
+<span class="fc" id="L305">        return validators.size();</span>
+    }
+
+    /**
+     * Get the global ReconnectionValidator instance, or null if not present.
+     * Used by FeedManager to wire disconnect/reconnect events.
+     */
+    public ReconnectionValidator getReconnectionValidator() {
+<span class="nc" id="L313">        return validators.stream()</span>
+<span class="nc" id="L314">                .filter(v -&gt; v instanceof ReconnectionValidator)</span>
+<span class="nc" id="L315">                .map(v -&gt; (ReconnectionValidator) v)</span>
+<span class="nc" id="L316">                .findFirst()</span>
+<span class="nc" id="L317">                .orElse(null);</span>
+    }
+
+    /**
+     * Check if the overall status has any FAIL results.
+     */
+    public boolean hasFailures() {
+<span class="fc" id="L324">        return validators.stream()</span>
+<span class="fc bfc" id="L325" title="All 2 branches covered.">                .anyMatch(v -&gt; v.getResult().getStatus() == ValidationResult.Status.FAIL);</span>
+    }
+
+    /**
+     * Log a structured validation event.
+     * WARN/FAIL results are logged at WARN level; PASS at DEBUG to avoid noise at high throughput.
+     * In JSON mode (prod), each field becomes a top-level searchable key.
+     * Blueprint Section 16: &quot;Every validation result logged as JSON — includes:
+     * timestamp, validator, symbol, status, value, threshold&quot;
+     */
+    private void logValidationEvent(Validator v, Tick tick) {
+<span class="fc" id="L336">        ValidationResult result = v.getResult();</span>
+<span class="fc bfc" id="L337" title="All 2 branches covered.">        if (result.getStatus() == ValidationResult.Status.PASS) {</span>
+<span class="fc" id="L338">            log.debug(&quot;Validation PASS: {} {} {}&quot;,</span>
+<span class="fc" id="L339">                    StructuredArguments.keyValue(&quot;validator&quot;, result.getArea()),</span>
+<span class="fc" id="L340">                    StructuredArguments.keyValue(&quot;symbol&quot;, tick.getSymbol()),</span>
+<span class="fc" id="L341">                    StructuredArguments.keyValue(&quot;status&quot;, result.getStatus()));</span>
+        } else {
+<span class="fc" id="L343">            log.warn(&quot;Validation {}: {} {} {} {} {}&quot;,</span>
+<span class="fc" id="L344">                    result.getStatus(),</span>
+<span class="fc" id="L345">                    StructuredArguments.keyValue(&quot;validator&quot;, result.getArea()),</span>
+<span class="fc" id="L346">                    StructuredArguments.keyValue(&quot;symbol&quot;, tick.getSymbol()),</span>
+<span class="fc" id="L347">                    StructuredArguments.keyValue(&quot;status&quot;, result.getStatus()),</span>
+<span class="fc" id="L348">                    StructuredArguments.keyValue(&quot;value&quot;, result.getMetric()),</span>
+<span class="fc" id="L349">                    StructuredArguments.keyValue(&quot;threshold&quot;, result.getThreshold()));</span>
+        }
+<span class="fc" id="L351">    }</span>
+
+    private void notifyListeners() {
+<span class="fc bfc" id="L354" title="All 2 branches covered.">        if (listeners.isEmpty()) {</span>
+<span class="fc" id="L355">            return;</span>
+        }
+<span class="fc" id="L357">        List&lt;ValidationResult&gt; results = getResults();</span>
+<span class="fc bfc" id="L358" title="All 2 branches covered.">        for (Consumer&lt;List&lt;ValidationResult&gt;&gt; listener : listeners) {</span>
+            try {
+<span class="fc" id="L360">                listener.accept(results);</span>
+<span class="fc" id="L361">            } catch (Exception e) {</span>
+<span class="fc" id="L362">                log.error(&quot;Listener threw exception: {}&quot;, e.getMessage(), e);</span>
+<span class="fc" id="L363">            }</span>
+<span class="fc" id="L364">        }</span>
+<span class="fc" id="L365">    }</span>
+
+    private void notifyPerFeedListeners(String feedId, List&lt;Validator&gt; perFeed) {
+<span class="fc bfc" id="L368" title="All 2 branches covered.">        if (perFeedListeners.isEmpty()) {</span>
+<span class="fc" id="L369">            return;</span>
+        }
+<span class="fc" id="L371">        List&lt;ValidationResult&gt; results = perFeed.stream()</span>
+<span class="fc" id="L372">                .map(Validator::getResult)</span>
+<span class="fc" id="L373">                .collect(Collectors.toList());</span>
+<span class="fc bfc" id="L374" title="All 2 branches covered.">        for (BiConsumer&lt;String, List&lt;ValidationResult&gt;&gt; listener : perFeedListeners) {</span>
+            try {
+<span class="fc" id="L376">                listener.accept(feedId, results);</span>
+<span class="nc" id="L377">            } catch (Exception e) {</span>
+<span class="nc" id="L378">                log.error(&quot;Per-feed listener threw exception: {}&quot;, e.getMessage(), e);</span>
+<span class="fc" id="L379">            }</span>
+<span class="fc" id="L380">        }</span>
+<span class="fc" id="L381">    }</span>
+
+    /**
+     * Create a fresh validator set for per-feed scoping (Fix 8).
+     * Instantiates the same 9 validator types as the global set.
+     */
+    private List&lt;Validator&gt; createValidatorSet() {
+<span class="fc" id="L388">        return List.of(</span>
+                new AccuracyValidator(),
+                new OrderingValidator(),
+                new LatencyValidator(),
+                new CompletenessValidator(),
+                new ThroughputValidator(),
+                new ReconnectionValidator(),
+                new SubscriptionValidator(),
+                new StatefulValidator(),
+                new SourceValidator()
+        );
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

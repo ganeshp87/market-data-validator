@@ -1,0 +1,471 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>LVWRChaosSimulator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.simulator</a> &gt; <span class="el_source">LVWRChaosSimulator.java</span></div><h1>LVWRChaosSimulator.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.simulator;
+
+import com.marketdata.validator.model.Tick;
+import net.logstash.logback.argument.StructuredArguments;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.math.BigDecimal;
+import java.math.MathContext;
+import java.math.RoundingMode;
+import java.time.Instant;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
+
+/**
+ * Internal LVWR_T synthetic market data simulator.
+ *
+ * Blueprint Section 2 — LVWR Chaos Simulator:
+ *   - 18-instrument universe (17 tradable + aggregate 126)
+ *   - 4 modes: CLEAN, NOISY, CHAOS, SCENARIO
+ *   - 12 failure types configurable via ScenarioConfig
+ *   - Deadline-based tick pacing (stable throughput)
+ *   - Single captured clock per tick (no negative latency)
+ *   - Runs on a virtual thread; started by FeedManager
+ *
+ * Deterministic phase-1 emission order:
+ *   126, 1, 2, 26, 20, 55, 8, 12, 54, 13, 14, 16, 19, 78, 9, 24, 23, 17
+ *
+ * Sequence number design (Fix 1):
+ *   Each instrument owns its own seqNum counter (starts at 0; first real tick = 1).
+ *   Heartbeats are emitted with seqNum=0 so validators see a clean 0→1 transition.
+ *   This ensures the CompletenessValidator never detects false gaps in CLEAN mode.
+ */
+public class LVWRChaosSimulator implements Runnable {
+
+<span class="fc" id="L41">    private static final Logger log = LoggerFactory.getLogger(LVWRChaosSimulator.class);</span>
+<span class="fc" id="L42">    private static final MathContext MC = new MathContext(8, RoundingMode.HALF_UP);</span>
+
+    // Deterministic emission order — blueprint-specified
+<span class="fc" id="L45">    static final int[] EMISSION_ORDER = {126, 1, 2, 26, 20, 55, 8, 12, 54, 13, 14, 16, 19, 78, 9, 24, 23, 17};</span>
+
+    // Instrument universe: id → InstrumentState
+<span class="fc" id="L48">    private final Map&lt;Integer, InstrumentState&gt; instruments = new LinkedHashMap&lt;&gt;();</span>
+
+    private final String feedId;
+    private final LVWRSimulatorAdapter adapter;
+    private final ScenarioEngine scenarioEngine;
+    private final Consumer&lt;Tick&gt; tickConsumer;
+
+    private volatile ScenarioConfig config;
+<span class="fc" id="L56">    private final AtomicBoolean running = new AtomicBoolean(false);</span>
+<span class="fc" id="L57">    private final AtomicLong ticksSent = new AtomicLong(0);</span>
+    /** Counted down to zero in the run() finally block — used by waitForStop(). */
+<span class="fc" id="L59">    private final CountDownLatch stoppedLatch = new CountDownLatch(1);</span>
+    /** Reference to the virtual thread running this simulator — set at start of run(). */
+    private volatile Thread runnerThread;
+    /** Per-type failure injection counts — keyed by FailureType name */
+<span class="fc" id="L63">    private final Map&lt;String, AtomicLong&gt; failureCountsByType = new ConcurrentHashMap&lt;&gt;();</span>
+
+    // Reconnect storm tracking
+<span class="fc" id="L66">    private int disconnectCount = 0;</span>
+<span class="fc" id="L67">    private long disconnectWindowStart = 0;</span>
+
+    public LVWRChaosSimulator(String feedId, ScenarioConfig config, Consumer&lt;Tick&gt; tickConsumer) {
+<span class="fc" id="L70">        this(feedId, config, tickConsumer, new ScenarioEngine());</span>
+<span class="fc" id="L71">    }</span>
+
+    /** Package-private constructor for testing — allows injecting a deterministic ScenarioEngine. */
+<span class="fc" id="L74">    LVWRChaosSimulator(String feedId, ScenarioConfig config, Consumer&lt;Tick&gt; tickConsumer, ScenarioEngine scenarioEngine) {</span>
+<span class="fc" id="L75">        this.feedId = feedId;</span>
+<span class="fc" id="L76">        this.config = config;</span>
+<span class="fc" id="L77">        this.adapter = new LVWRSimulatorAdapter();</span>
+<span class="fc" id="L78">        this.scenarioEngine = scenarioEngine;</span>
+<span class="fc" id="L79">        this.tickConsumer = tickConsumer;</span>
+        // Pre-populate all 12 failure type counters at zero
+<span class="fc bfc" id="L81" title="All 2 branches covered.">        for (FailureType ft : FailureType.values()) {</span>
+<span class="fc" id="L82">            failureCountsByType.put(ft.name(), new AtomicLong(0));</span>
+        }
+<span class="fc" id="L84">        initInstruments();</span>
+<span class="fc" id="L85">    }</span>
+
+    @Override
+    public void run() {
+<span class="fc" id="L89">        runnerThread = Thread.currentThread();</span>
+<span class="fc" id="L90">        running.set(true);</span>
+<span class="fc" id="L91">        scenarioEngine.reset();</span>
+
+<span class="fc" id="L93">        log.info(&quot;LVWR_T simulator starting {} {} {}&quot;,</span>
+<span class="fc" id="L94">                StructuredArguments.keyValue(&quot;feedId&quot;, feedId),</span>
+<span class="fc" id="L95">                StructuredArguments.keyValue(&quot;mode&quot;, config.getMode()),</span>
+<span class="fc" id="L96">                StructuredArguments.keyValue(&quot;ticksPerSecond&quot;, config.getTicksPerSecond()));</span>
+
+        // Phase 1: Emit pre-open reference rows for each instrument
+<span class="fc" id="L99">        emitPhase1HeartbeatsIfEnabled();</span>
+
+<span class="fc" id="L101">        long tradeCount = 0;</span>
+<span class="fc" id="L102">        int numTrades = config.getNumTrades(); // 0 = unlimited</span>
+<span class="fc" id="L103">        long intervalNanos = 1_000_000_000L / config.getTicksPerSecond();</span>
+<span class="fc" id="L104">        long nextDeadlineNs = System.nanoTime();</span>
+
+        try {
+<span class="pc bpc" id="L107" title="1 of 2 branches missed.">            while (running.get()) {</span>
+<span class="fc bfc" id="L108" title="All 4 branches covered.">                if (numTrades &gt; 0 &amp;&amp; tradeCount &gt;= numTrades) {</span>
+<span class="fc" id="L109">                    break;</span>
+                }
+
+                // Pick the next instrument in round-robin order (skip 126 — it's aggregate)
+<span class="fc" id="L113">                int instrId = EMISSION_ORDER[(int) (tradeCount % (EMISSION_ORDER.length - 1)) + 1]; // skip index 0 = 126</span>
+<span class="fc" id="L114">                InstrumentState state = instruments.get(instrId);</span>
+
+                // Decide whether to inject a failure
+<span class="fc" id="L117">                FailureType failure = scenarioEngine.decide(config);</span>
+
+                // Generate the tick (or handle special failure modes)
+<span class="fc bfc" id="L120" title="All 2 branches covered.">                if (failure == FailureType.DISCONNECT) {</span>
+<span class="fc" id="L121">                    handleDisconnect();</span>
+<span class="fc" id="L122">                    tradeCount++;</span>
+<span class="fc" id="L123">                    ticksSent.incrementAndGet();</span>
+<span class="fc" id="L124">                    failureCountsByType.get(FailureType.DISCONNECT.name()).incrementAndGet();</span>
+<span class="fc bfc" id="L125" title="All 2 branches covered.">                } else if (failure == FailureType.RECONNECT_STORM) {</span>
+<span class="fc" id="L126">                    handleReconnectStorm();</span>
+<span class="fc" id="L127">                    tradeCount++;</span>
+<span class="fc" id="L128">                    ticksSent.incrementAndGet();</span>
+<span class="fc" id="L129">                    failureCountsByType.get(FailureType.RECONNECT_STORM.name()).incrementAndGet();</span>
+<span class="fc bfc" id="L130" title="All 2 branches covered.">                } else if (failure == FailureType.THROTTLE_BURST) {</span>
+<span class="fc" id="L131">                    handleThrottleBurst(state);</span>
+<span class="fc" id="L132">                    tradeCount++;</span>
+<span class="fc" id="L133">                    failureCountsByType.get(FailureType.THROTTLE_BURST.name()).incrementAndGet();</span>
+                } else {
+<span class="fc" id="L135">                    Tick tick = buildTick(state, instrId, failure);</span>
+                    // Count the failure even when the tick is null (e.g. MALFORMED_PAYLOAD)
+<span class="fc bfc" id="L137" title="All 2 branches covered.">                    if (failure != null) failureCountsByType.get(failure.name()).incrementAndGet();</span>
+<span class="fc bfc" id="L138" title="All 2 branches covered.">                    if (tick != null) {</span>
+<span class="fc" id="L139">                        tickConsumer.accept(tick);</span>
+<span class="fc" id="L140">                        ticksSent.incrementAndGet();</span>
+                    }
+<span class="fc" id="L142">                    tradeCount++;</span>
+                }
+
+                // Deadline-based pacing — stable throughput regardless of processing jitter
+<span class="fc" id="L146">                nextDeadlineNs += intervalNanos;</span>
+<span class="fc" id="L147">                long sleepNs = nextDeadlineNs - System.nanoTime();</span>
+<span class="fc bfc" id="L148" title="All 2 branches covered.">                if (sleepNs &gt; 0) {</span>
+<span class="fc" id="L149">                    Thread.sleep(0, (int) Math.min(sleepNs, 999_999));</span>
+                }
+<span class="fc" id="L151">            }</span>
+<span class="fc" id="L152">        } catch (InterruptedException e) {</span>
+<span class="fc" id="L153">            Thread.currentThread().interrupt();</span>
+        } finally {
+<span class="fc" id="L155">            running.set(false);</span>
+<span class="fc" id="L156">            stoppedLatch.countDown();</span>
+<span class="fc" id="L157">            log.info(&quot;LVWR_T simulator stopped {} {} {}&quot;,</span>
+<span class="fc" id="L158">                    StructuredArguments.keyValue(&quot;feedId&quot;, feedId),</span>
+<span class="fc" id="L159">                    StructuredArguments.keyValue(&quot;ticksSent&quot;, ticksSent.get()),</span>
+<span class="fc" id="L160">                    StructuredArguments.keyValue(&quot;totalFailures&quot;, getTotalFailuresInjected()));</span>
+        }
+<span class="fc" id="L162">    }</span>
+
+    public void stop() {
+<span class="fc" id="L165">        running.set(false);</span>
+<span class="fc" id="L166">        Thread t = runnerThread;</span>
+<span class="pc bpc" id="L167" title="1 of 2 branches missed.">        if (t != null) t.interrupt(); // wake from any blocking sleep (e.g. DISCONNECT 8s)</span>
+<span class="fc" id="L168">    }</span>
+
+    /**
+     * Block until the simulator's run() method exits, or until the timeout elapses.
+     *
+     * @param timeoutMs maximum time to wait in milliseconds
+     * @return true if the simulator stopped within the timeout, false if it timed out
+     * @throws InterruptedException if the calling thread is interrupted while waiting
+     */
+    public boolean waitForStop(long timeoutMs) throws InterruptedException {
+<span class="fc" id="L178">        return stoppedLatch.await(timeoutMs, TimeUnit.MILLISECONDS);</span>
+    }
+
+    public boolean isRunning() {
+<span class="fc" id="L182">        return running.get();</span>
+    }
+
+    public long getTicksSent() {
+<span class="fc" id="L186">        return ticksSent.get();</span>
+    }
+
+    /** Returns per-failure-type injection counts (all 12 types, zero if not injected). */
+    public Map&lt;String, Long&gt; getFailuresInjected() {
+<span class="fc" id="L191">        Map&lt;String, Long&gt; snapshot = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc bfc" id="L192" title="All 2 branches covered.">        for (FailureType ft : FailureType.values()) {</span>
+<span class="fc" id="L193">            snapshot.put(ft.name(), failureCountsByType.get(ft.name()).get());</span>
+        }
+<span class="fc" id="L195">        return snapshot;</span>
+    }
+
+    /** Returns total failures across all types (convenience for logging). */
+    public long getTotalFailuresInjected() {
+<span class="fc" id="L200">        return failureCountsByType.values().stream().mapToLong(AtomicLong::get).sum();</span>
+    }
+
+    public void updateConfig(ScenarioConfig newConfig) {
+<span class="fc" id="L204">        ScenarioConfig old = this.config;</span>
+<span class="fc bfc" id="L205" title="All 2 branches covered.">        boolean modeChanged = newConfig.getMode() != old.getMode();</span>
+<span class="fc bfc" id="L206" title="All 2 branches covered.">        boolean scenarioTargetChanged = newConfig.getMode() == SimulatorMode.SCENARIO</span>
+<span class="pc bpc" id="L207" title="1 of 2 branches missed.">                &amp;&amp; newConfig.getTargetScenario() != old.getTargetScenario();</span>
+
+<span class="fc" id="L209">        this.config = newConfig;</span>
+
+        // Reset per-type counters when the mode changes or when the SCENARIO target
+        // switches — the caller selected a specific fault for isolated testing and old
+        // counts from a prior mode run must not pollute the FAILURES INJECTED panel.
+<span class="pc bpc" id="L214" title="1 of 4 branches missed.">        if (modeChanged || scenarioTargetChanged) {</span>
+<span class="fc" id="L215">            failureCountsByType.values().forEach(c -&gt; c.set(0));</span>
+        }
+<span class="fc" id="L217">    }</span>
+
+    public ScenarioConfig getConfig() {
+<span class="fc" id="L220">        return config;</span>
+    }
+
+    // --- Internal tick construction ---
+
+    /**
+     * Build a tick for the given instrument and failure type.
+     * Uses per-instrument sequence numbers so each symbol's seqNums are dense and
+     * consecutive (1, 2, 3…), preventing false gap events in the CompletenessValidator.
+     */
+    private Tick buildTick(InstrumentState state, int instrId, FailureType failure) {
+<span class="fc" id="L231">        BigDecimal price = state.nextPrice();</span>
+<span class="fc" id="L232">        BigDecimal volume = randomVolume();</span>
+<span class="fc" id="L233">        long syntheticLatencyMs = 2 + (long) (Math.random() * 18); // 2–19 ms</span>
+
+<span class="fc" id="L235">        String symbol = state.getSymbol();</span>
+
+<span class="fc bfc" id="L237" title="All 2 branches covered.">        if (failure == null) {</span>
+<span class="fc" id="L238">            long seq = state.nextSeqNum();</span>
+<span class="fc" id="L239">            Tick t = adapter.buildTick(feedId, symbol, price, volume, seq, syntheticLatencyMs, null);</span>
+<span class="fc" id="L240">            state.setLastExchangeTimestamp(t.getExchangeTimestamp());</span>
+<span class="fc" id="L241">            return t;</span>
+        }
+
+<span class="pc bpc" id="L244" title="1 of 10 branches missed.">        return switch (failure) {</span>
+            case NEGATIVE_PRICE -&gt; {
+<span class="fc" id="L246">                BigDecimal negPrice = new BigDecimal(&quot;-0.125&quot;);</span>
+<span class="fc" id="L247">                long seq = state.nextSeqNum();</span>
+<span class="fc" id="L248">                Tick t = adapter.buildTick(feedId, symbol, negPrice, volume, seq, syntheticLatencyMs, failure);</span>
+<span class="fc" id="L249">                state.setLastExchangeTimestamp(t.getExchangeTimestamp());</span>
+<span class="fc" id="L250">                yield t;</span>
+            }
+            case PRICE_SPIKE -&gt; {
+<span class="fc" id="L253">                BigDecimal spikePrice = price.multiply(new BigDecimal(&quot;1.14&quot;), MC); // +14%</span>
+<span class="fc" id="L254">                state.setLastPrice(spikePrice);</span>
+<span class="fc" id="L255">                long seq = state.nextSeqNum();</span>
+<span class="fc" id="L256">                Tick t = adapter.buildTick(feedId, symbol, spikePrice, volume, seq, syntheticLatencyMs, failure);</span>
+<span class="fc" id="L257">                state.setLastExchangeTimestamp(t.getExchangeTimestamp());</span>
+<span class="fc" id="L258">                yield t;</span>
+            }
+            case SEQUENCE_GAP -&gt; {
+                // Advance the per-symbol counter by 5 extra to create a detectable gap.
+                // The CompletenessValidator will see seqNum jump by 6 (5 skipped + 1 new),
+                // recording 5 missing seqNums per gap event. This keeps the missing count
+                // proportional to the fault injection rate (Fix 5).
+<span class="fc" id="L265">                state.advanceSeqNum(5);</span>
+<span class="fc" id="L266">                long seq = state.nextSeqNum();</span>
+<span class="fc" id="L267">                Tick t = adapter.buildTick(feedId, symbol, price, volume, seq, syntheticLatencyMs, failure);</span>
+<span class="fc" id="L268">                state.setLastExchangeTimestamp(t.getExchangeTimestamp());</span>
+<span class="fc" id="L269">                yield t;</span>
+            }
+            case DUPLICATE_TICK -&gt; {
+<span class="fc" id="L272">                long seq = state.nextSeqNum();</span>
+<span class="fc" id="L273">                Tick orig = adapter.buildTick(feedId, symbol, price, volume, seq, syntheticLatencyMs, failure);</span>
+<span class="fc" id="L274">                state.setLastExchangeTimestamp(orig.getExchangeTimestamp());</span>
+<span class="fc" id="L275">                tickConsumer.accept(orig); // emit original</span>
+<span class="fc" id="L276">                ticksSent.incrementAndGet();</span>
+<span class="fc" id="L277">                yield adapter.buildTick(feedId, symbol, price, volume, seq, syntheticLatencyMs, failure); // duplicate</span>
+            }
+            case OUT_OF_ORDER -&gt; {
+                // Use an ascending seqNum so the idempotency guard in validators does not
+                // discard the tick. The out-of-order condition is signalled by setting the
+                // exchange timestamp to be BEFORE the previous tick's exchange timestamp for
+                // this symbol — exactly what OrderingValidator checks.
+<span class="fc" id="L284">                long seq = state.nextSeqNum();</span>
+<span class="fc" id="L285">                Tick t = adapter.buildTick(feedId, symbol, price, volume, seq, syntheticLatencyMs, failure);</span>
+<span class="fc" id="L286">                Instant prevExchange = state.getLastExchangeTimestamp();</span>
+<span class="fc bfc" id="L287" title="All 2 branches covered.">                if (prevExchange != null) {</span>
+<span class="fc" id="L288">                    t.setExchangeTimestamp(prevExchange.minusMillis(50));</span>
+                }
+                // Do not update lastExchangeTimestamp — the next clean tick stays in order.
+<span class="fc" id="L291">                yield t;</span>
+            }
+            case STALE_TIMESTAMP -&gt; {
+<span class="fc" id="L294">                long seq = state.nextSeqNum();</span>
+<span class="fc" id="L295">                Tick t = adapter.buildStaleTick(feedId, symbol, price, volume, seq);</span>
+<span class="fc" id="L296">                state.setLastExchangeTimestamp(t.getExchangeTimestamp());</span>
+<span class="fc" id="L297">                yield t;</span>
+            }
+<span class="fc" id="L299">            case MALFORMED_PAYLOAD -&gt; null; // null tick — signals CompletenessValidator of missing data</span>
+            case SYMBOL_MISMATCH -&gt; {
+                // Aggregate instrument 126 with wrong source instrument ID
+<span class="fc" id="L302">                long seq = state.nextSeqNum();</span>
+<span class="fc" id="L303">                yield adapter.buildTick(feedId, instruments.get(126).getSymbol(), price, volume, seq, syntheticLatencyMs, failure);</span>
+            }
+            case CUMVOL_BACKWARD -&gt; {
+<span class="fc" id="L306">                state.decreaseCumVol(200);</span>
+<span class="fc" id="L307">                long seq = state.nextSeqNum();</span>
+<span class="fc" id="L308">                Tick t = adapter.buildTick(feedId, symbol, price, volume, seq, syntheticLatencyMs, failure);</span>
+<span class="fc" id="L309">                state.setLastExchangeTimestamp(t.getExchangeTimestamp());</span>
+<span class="fc" id="L310">                yield t;</span>
+            }
+            default -&gt; {
+<span class="nc" id="L313">                long seq = state.nextSeqNum();</span>
+<span class="nc" id="L314">                Tick t = adapter.buildTick(feedId, symbol, price, volume, seq, syntheticLatencyMs, failure);</span>
+<span class="nc" id="L315">                state.setLastExchangeTimestamp(t.getExchangeTimestamp());</span>
+<span class="nc" id="L316">                yield t;</span>
+            }
+        };
+    }
+
+    private void handleDisconnect() throws InterruptedException {
+<span class="fc" id="L322">        log.info(&quot;LVWR_T injecting DISCONNECT {}&quot;,</span>
+<span class="fc" id="L323">                StructuredArguments.keyValue(&quot;feedId&quot;, feedId));</span>
+        // Pause emission for configured duration — ThroughputValidator will detect the drop
+<span class="fc" id="L325">        Thread.sleep(config.getDisconnectDurationMs());</span>
+<span class="fc" id="L326">    }</span>
+
+    private void handleReconnectStorm() throws InterruptedException {
+<span class="fc" id="L329">        long now = System.currentTimeMillis();</span>
+<span class="pc bpc" id="L330" title="1 of 4 branches missed.">        if (disconnectWindowStart == 0 || now - disconnectWindowStart &gt; 30_000) {</span>
+<span class="fc" id="L331">            disconnectWindowStart = now;</span>
+<span class="fc" id="L332">            disconnectCount = 0;</span>
+        }
+<span class="fc" id="L334">        disconnectCount++;</span>
+
+<span class="fc" id="L336">        log.info(&quot;LVWR_T injecting RECONNECT_STORM {} {}&quot;,</span>
+<span class="fc" id="L337">                StructuredArguments.keyValue(&quot;feedId&quot;, feedId),</span>
+<span class="fc" id="L338">                StructuredArguments.keyValue(&quot;disconnectCount&quot;, disconnectCount));</span>
+
+<span class="fc" id="L340">        Thread.sleep(config.getReconnectPauseDurationMs()); // brief pause per reconnect event</span>
+<span class="fc" id="L341">    }</span>
+
+    private void handleThrottleBurst(InstrumentState state) {
+        // Emit 800 ticks with the same timestamp — BackpressureQueue DROP_OLDEST kicks in.
+        // Each instrument uses its own per-symbol seqNum so continuity is preserved.
+<span class="fc" id="L346">        Instant burstTime = Instant.now();</span>
+<span class="fc" id="L347">        BigDecimal price = state.nextPrice();</span>
+<span class="fc" id="L348">        BigDecimal volume = randomVolume();</span>
+<span class="fc bfc" id="L349" title="All 2 branches covered.">        for (int i = 0; i &lt; 800; i++) {</span>
+<span class="fc" id="L350">            int eid = EMISSION_ORDER[(i % (EMISSION_ORDER.length - 1)) + 1];</span>
+<span class="fc" id="L351">            InstrumentState instrState = instruments.get(eid);</span>
+<span class="fc" id="L352">            long seq = instrState.nextSeqNum();</span>
+<span class="fc" id="L353">            Tick t = adapter.buildTick(feedId, instrState.getSymbol(), price, volume, seq, 2, FailureType.THROTTLE_BURST);</span>
+<span class="fc" id="L354">            t.setReceivedTimestamp(burstTime); // same timestamp for all burst ticks</span>
+<span class="fc" id="L355">            t.setExchangeTimestamp(burstTime.minusMillis(2));</span>
+<span class="fc" id="L356">            tickConsumer.accept(t);</span>
+<span class="fc" id="L357">            ticksSent.incrementAndGet();</span>
+        }
+<span class="fc" id="L359">    }</span>
+
+    private void emitPhase1HeartbeatsIfEnabled() {
+<span class="pc bpc" id="L362" title="1 of 2 branches missed.">        if (!config.isIncludeHeartbeats()) return;</span>
+<span class="nc bnc" id="L363" title="All 2 branches missed.">        for (int instrId : EMISSION_ORDER) {</span>
+<span class="nc" id="L364">            InstrumentState state = instruments.get(instrId);</span>
+<span class="nc bnc" id="L365" title="All 2 branches missed.">            if (state == null) continue;</span>
+<span class="nc" id="L366">            BigDecimal price = state.getLastPrice();</span>
+            // Heartbeats use seqNum=0 (pre-open; real ticks start at seqNum=1 via nextSeqNum())
+<span class="nc" id="L368">            Tick hbTick = adapter.buildTick(feedId, state.getSymbol(), price,</span>
+                    BigDecimal.ZERO, 0L, 5L, null);
+<span class="nc" id="L370">            tickConsumer.accept(hbTick);</span>
+<span class="nc" id="L371">            ticksSent.incrementAndGet();</span>
+        }
+<span class="nc" id="L373">    }</span>
+
+    private BigDecimal randomVolume() {
+        // Rough log-normal distribution — mostly small lots
+<span class="fc" id="L377">        double u = Math.random();</span>
+        int qty;
+<span class="fc bfc" id="L379" title="All 2 branches covered.">        if (u &lt; 0.45) qty = 1 + (int) (Math.random() * 10);</span>
+<span class="fc bfc" id="L380" title="All 2 branches covered.">        else if (u &lt; 0.75) qty = 11 + (int) (Math.random() * 40);</span>
+<span class="fc bfc" id="L381" title="All 2 branches covered.">        else if (u &lt; 0.93) qty = 51 + (int) (Math.random() * 150);</span>
+<span class="fc bfc" id="L382" title="All 2 branches covered.">        else if (u &lt; 0.98) qty = 201 + (int) (Math.random() * 300);</span>
+<span class="fc" id="L383">        else qty = 500 + (int) (Math.random() * 500);</span>
+<span class="fc" id="L384">        return new BigDecimal(qty);</span>
+    }
+
+    // --- Instrument universe setup ---
+
+    private void initInstruments() {
+        // Blueprint Table: ID, Symbol, Price Range, Volatility
+<span class="fc" id="L391">        addInstrument(1,   &quot;EUR/USD&quot;,     &quot;1.1000&quot;, &quot;0.0005&quot;);</span>
+<span class="fc" id="L392">        addInstrument(2,   &quot;GBP/USD&quot;,     &quot;1.2900&quot;, &quot;0.0005&quot;);</span>
+<span class="fc" id="L393">        addInstrument(8,   &quot;USD/JPY&quot;,     &quot;150.00&quot;, &quot;0.0008&quot;);</span>
+<span class="fc" id="L394">        addInstrument(9,   &quot;EUR/GBP&quot;,     &quot;0.8550&quot;, &quot;0.0004&quot;);</span>
+<span class="fc" id="L395">        addInstrument(12,  &quot;XAU/USD&quot;,     &quot;20.25&quot;,  &quot;0.003&quot;);</span>
+<span class="fc" id="L396">        addInstrument(13,  &quot;LIBOR_ON&quot;,    &quot;5.320&quot;,  &quot;0.0002&quot;);</span>
+<span class="fc" id="L397">        addInstrument(14,  &quot;EURIBOR_3M&quot;,  &quot;3.875&quot;,  &quot;0.002&quot;);</span>
+<span class="fc" id="L398">        addInstrument(16,  &quot;UK_GILT_10Y&quot;, &quot;4.225&quot;,  &quot;0.002&quot;);</span>
+<span class="fc" id="L399">        addInstrument(17,  &quot;US_TSY_10Y&quot;,  &quot;4.325&quot;,  &quot;0.002&quot;);</span>
+<span class="fc" id="L400">        addInstrument(19,  &quot;DE_BUND_10Y&quot;, &quot;2.325&quot;,  &quot;0.002&quot;);</span>
+<span class="fc" id="L401">        addInstrument(20,  &quot;FR_OAT_10Y&quot;,  &quot;2.975&quot;,  &quot;0.002&quot;);</span>
+<span class="fc" id="L402">        addInstrument(23,  &quot;IT_BTP_10Y&quot;,  &quot;3.675&quot;,  &quot;0.003&quot;);</span>
+<span class="fc" id="L403">        addInstrument(24,  &quot;JP_JGB_10Y&quot;,  &quot;1.350&quot;,  &quot;0.001&quot;);</span>
+<span class="fc" id="L404">        addInstrument(26,  &quot;SP_BONO_10Y&quot;, &quot;3.125&quot;,  &quot;0.002&quot;);</span>
+<span class="fc" id="L405">        addInstrument(54,  &quot;US_TSY_2Y&quot;,   &quot;4.750&quot;,  &quot;0.002&quot;);</span>
+<span class="fc" id="L406">        addInstrument(55,  &quot;US_TSY_30Y&quot;,  &quot;4.575&quot;,  &quot;0.002&quot;);</span>
+<span class="fc" id="L407">        addInstrument(78,  &quot;CHF_LIBOR_3M&quot;,&quot;1.425&quot;,  &quot;0.0002&quot;);</span>
+<span class="fc" id="L408">        addInstrument(126, &quot;AGGR_INDEX&quot;,  &quot;100.00&quot;, &quot;0.001&quot;);</span>
+<span class="fc" id="L409">    }</span>
+
+    private void addInstrument(int id, String symbol, String seedPrice, String volatility) {
+<span class="fc" id="L412">        instruments.put(id, new InstrumentState(symbol, new BigDecimal(seedPrice), new BigDecimal(volatility)));</span>
+<span class="fc" id="L413">    }</span>
+
+    // --- InstrumentState inner class ---
+
+    static class InstrumentState {
+        private final String symbol;
+        private BigDecimal lastPrice;
+        private final BigDecimal volatility;
+<span class="fc" id="L421">        private BigDecimal cumVol = BigDecimal.ZERO;</span>
+<span class="fc" id="L422">        private final Random rng = new Random();</span>
+
+        /** Per-instrument sequence counter. Starts at 0; nextSeqNum() returns 1 on first call. */
+<span class="fc" id="L425">        private long seqNum = 0;</span>
+
+        /** Last exchange timestamp emitted for this instrument — used by OUT_OF_ORDER injection. */
+        private Instant lastExchangeTimestamp;
+
+<span class="fc" id="L430">        InstrumentState(String symbol, BigDecimal seedPrice, BigDecimal volatility) {</span>
+<span class="fc" id="L431">            this.symbol = symbol;</span>
+<span class="fc" id="L432">            this.lastPrice = seedPrice;</span>
+<span class="fc" id="L433">            this.volatility = volatility;</span>
+<span class="fc" id="L434">        }</span>
+
+        /** GBM price walk with zero drift, per-instrument volatility, bounded to &gt; 0. */
+        BigDecimal nextPrice() {
+<span class="fc" id="L438">            double z = rng.nextGaussian();</span>
+<span class="fc" id="L439">            BigDecimal move = volatility.multiply(new BigDecimal(z), MC);</span>
+<span class="fc" id="L440">            BigDecimal newPrice = lastPrice.add(lastPrice.multiply(move, MC));</span>
+            // Clamp to &gt; 0
+<span class="pc bpc" id="L442" title="1 of 2 branches missed.">            if (newPrice.compareTo(BigDecimal.ZERO) &lt;= 0) {</span>
+<span class="nc" id="L443">                newPrice = lastPrice;</span>
+            }
+<span class="fc" id="L445">            lastPrice = newPrice.setScale(6, RoundingMode.HALF_UP);</span>
+<span class="fc" id="L446">            return lastPrice;</span>
+        }
+
+<span class="nc" id="L449">        BigDecimal getLastPrice() { return lastPrice; }</span>
+<span class="fc" id="L450">        void setLastPrice(BigDecimal p) { this.lastPrice = p; }</span>
+
+<span class="nc" id="L452">        BigDecimal getCumVol() { return cumVol; }</span>
+<span class="nc" id="L453">        void addCumVol(BigDecimal vol) { cumVol = cumVol.add(vol); }</span>
+<span class="fc" id="L454">        void decreaseCumVol(long amount) { cumVol = cumVol.subtract(new BigDecimal(amount)); }</span>
+
+<span class="fc" id="L456">        String getSymbol() { return symbol; }</span>
+
+        /** Returns the next sequence number (first call returns 1). */
+<span class="fc" id="L459">        long nextSeqNum() { return ++seqNum; }</span>
+
+        /**
+         * Advance the seqNum counter by {@code extra} positions without emitting a tick.
+         * Used by SEQUENCE_GAP injection to create a detectable gap.
+         */
+<span class="fc" id="L465">        void advanceSeqNum(long extra) { seqNum += extra; }</span>
+
+<span class="fc" id="L467">        Instant getLastExchangeTimestamp() { return lastExchangeTimestamp; }</span>
+<span class="fc" id="L468">        void setLastExchangeTimestamp(Instant ts) { this.lastExchangeTimestamp = ts; }</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

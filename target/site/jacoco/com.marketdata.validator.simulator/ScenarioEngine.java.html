@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ScenarioEngine.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.simulator</a> &gt; <span class="el_source">ScenarioEngine.java</span></div><h1>ScenarioEngine.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.simulator;
+
+import java.util.Random;
+
+/**
+ * Decides which FailureType (if any) to inject for each tick, based on the current SimulatorMode.
+ *
+ * Blueprint QE Section 2 — ScenarioEngine:
+ *   CLEAN    — never injects a failure
+ *   NOISY    — random failures at configured failureRate using a uniform cycling strategy
+ *   CHAOS    — ~50% failures, cycling through all 12 types deterministically
+ *   SCENARIO — only targetScenario fires; all other counters must stay zero (strict isolation)
+ */
+public class ScenarioEngine {
+
+<span class="fc" id="L16">    private final FailureType[] allTypes = FailureType.values();</span>
+    private final Random rng;
+<span class="fc" id="L18">    private int chaosIndex = 0;</span>
+
+    public ScenarioEngine() {
+<span class="fc" id="L21">        this(new Random());</span>
+<span class="fc" id="L22">    }</span>
+
+    /** Constructor with injectable RNG — used for testing. */
+<span class="fc" id="L25">    public ScenarioEngine(Random rng) {</span>
+<span class="fc" id="L26">        this.rng = rng;</span>
+<span class="fc" id="L27">    }</span>
+
+    /**
+     * Decide the failure type (or null for a clean tick) based on mode and config.
+     */
+    public FailureType decide(ScenarioConfig config) {
+<span class="fc bfc" id="L33" title="All 4 branches covered.">        return switch (config.getMode()) {</span>
+<span class="fc" id="L34">            case CLEAN -&gt; null;</span>
+            case NOISY -&gt; {
+<span class="fc bfc" id="L36" title="All 2 branches covered.">                if (rng.nextDouble() &lt; config.getFailureRate()) {</span>
+                    // Pick a random failure type from the full catalogue
+<span class="fc" id="L38">                    yield allTypes[rng.nextInt(allTypes.length)];</span>
+                }
+<span class="fc" id="L40">                yield null;</span>
+            }
+            case CHAOS -&gt; {
+                // Every other tick is a failure; cycle through all types deterministically
+<span class="fc bfc" id="L44" title="All 2 branches covered.">                if (rng.nextDouble() &lt; 0.50) {</span>
+<span class="fc" id="L45">                    FailureType chosen = allTypes[chaosIndex % allTypes.length];</span>
+<span class="fc" id="L46">                    chaosIndex++;</span>
+<span class="fc" id="L47">                    yield chosen;</span>
+                }
+<span class="fc" id="L49">                yield null;</span>
+            }
+            case SCENARIO -&gt; {
+                // Strict isolation — only the configured targetScenario type fires
+<span class="fc bfc" id="L53" title="All 2 branches covered.">                if (config.getTargetScenario() == null) {</span>
+<span class="fc" id="L54">                    yield null;</span>
+                }
+<span class="pc bpc" id="L56" title="1 of 2 branches missed.">                if (rng.nextDouble() &lt; config.getFailureRate()) {</span>
+<span class="fc" id="L57">                    yield config.getTargetScenario();</span>
+                }
+<span class="nc" id="L59">                yield null;</span>
+            }
+        };
+    }
+
+    /** Reset the deterministic chaos cycle counter. */
+    public void reset() {
+<span class="fc" id="L66">        chaosIndex = 0;</span>
+<span class="fc" id="L67">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

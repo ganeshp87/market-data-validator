@@ -1,0 +1,266 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FeedController.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.controller</a> &gt; <span class="el_source">FeedController.java</span></div><h1>FeedController.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.controller;
+
+import com.marketdata.validator.feed.FeedManager;
+import com.marketdata.validator.model.Connection;
+import com.marketdata.validator.simulator.ScenarioConfig;
+import com.marketdata.validator.validator.ValidatorEngine;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.net.URI;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * REST controller for managing WebSocket feed connections.
+ *
+ * Endpoints:
+ *   GET    /api/feeds              — list all configured feeds
+ *   POST   /api/feeds              — add a new feed connection
+ *   PUT    /api/feeds/{id}         — update feed config
+ *   DELETE /api/feeds/{id}         — stop and remove feed
+ *   POST   /api/feeds/{id}/start   — start WebSocket connection
+ *   POST   /api/feeds/{id}/stop    — stop WebSocket connection
+ *   POST   /api/feeds/{id}/subscribe   — subscribe to additional symbols
+ *   POST   /api/feeds/{id}/unsubscribe — unsubscribe from symbols
+ */
+@RestController
+@RequestMapping(&quot;/api/feeds&quot;)
+public class FeedController {
+
+    private final FeedManager feedManager;
+    private final ValidatorEngine validatorEngine;
+
+<span class="fc" id="L39">    public FeedController(FeedManager feedManager, ValidatorEngine validatorEngine) {</span>
+<span class="fc" id="L40">        this.feedManager = feedManager;</span>
+<span class="fc" id="L41">        this.validatorEngine = validatorEngine;</span>
+<span class="fc" id="L42">    }</span>
+
+    /**
+     * List all configured feeds.
+     */
+    @GetMapping
+    public List&lt;Connection&gt; listFeeds() {
+<span class="fc" id="L49">        return feedManager.getAllConnections();</span>
+    }
+
+    /**
+     * Add a new feed connection. Validates URL to prevent SSRF.
+     * LVWR_T connections are exempt — they use a synthetic URL and no external socket.
+     * Detection uses both adapterType enum AND url prefix as a fallback (handles null
+     * adapterType from edge-case JSON deserialization).
+     */
+    @PostMapping
+    public ResponseEntity&lt;?&gt; addFeed(@RequestBody Connection connection) {
+<span class="pc bpc" id="L60" title="1 of 2 branches missed.">        boolean isLvwr = Connection.AdapterType.LVWR_T.equals(connection.getAdapterType())</span>
+<span class="pc bpc" id="L61" title="1 of 4 branches missed.">                || (connection.getUrl() != null &amp;&amp; connection.getUrl().startsWith(&quot;lvwr://&quot;));</span>
+
+<span class="pc bpc" id="L63" title="1 of 2 branches missed.">        if (!isLvwr) {</span>
+<span class="fc" id="L64">            String validationError = validateFeedUrl(connection.getUrl());</span>
+<span class="fc bfc" id="L65" title="All 2 branches covered.">            if (validationError != null) {</span>
+<span class="fc" id="L66">                return ResponseEntity.badRequest()</span>
+<span class="fc" id="L67">                        .body(Map.of(&quot;error&quot;, validationError));</span>
+            }
+<span class="fc" id="L69">        } else {</span>
+<span class="nc" id="L70">            connection.setAdapterType(Connection.AdapterType.LVWR_T);</span>
+<span class="nc" id="L71">            connection.setUrl(&quot;lvwr://simulator&quot;);</span>
+        }
+
+<span class="fc" id="L74">        Connection created = feedManager.addConnection(connection);</span>
+<span class="fc" id="L75">        return ResponseEntity.status(HttpStatus.CREATED).body(created);</span>
+    }
+
+    /**
+     * Update an existing feed's config (name, URL, symbols).
+     * Connection must be stopped before updating URL.
+     */
+    @PutMapping(&quot;/{id}&quot;)
+    public ResponseEntity&lt;?&gt; updateFeed(@PathVariable String id,
+                                        @RequestBody Connection update) {
+<span class="fc" id="L85">        Connection existing = feedManager.getConnection(id);</span>
+<span class="fc bfc" id="L86" title="All 2 branches covered.">        if (existing == null) {</span>
+<span class="fc" id="L87">            return ResponseEntity.notFound().build();</span>
+        }
+
+<span class="pc bpc" id="L90" title="1 of 4 branches missed.">        if (update.getUrl() != null &amp;&amp; !update.getUrl().equals(existing.getUrl())) {</span>
+<span class="pc bpc" id="L91" title="1 of 2 branches missed.">            if (existing.getStatus() == Connection.Status.CONNECTED</span>
+<span class="nc bnc" id="L92" title="All 2 branches missed.">                    || existing.getStatus() == Connection.Status.RECONNECTING) {</span>
+<span class="fc" id="L93">                return ResponseEntity.badRequest()</span>
+<span class="fc" id="L94">                        .body(Map.of(&quot;error&quot;, &quot;Stop connection before changing URL&quot;));</span>
+            }
+<span class="nc" id="L96">            String validationError = validateFeedUrl(update.getUrl());</span>
+<span class="nc bnc" id="L97" title="All 2 branches missed.">            if (validationError != null) {</span>
+<span class="nc" id="L98">                return ResponseEntity.badRequest()</span>
+<span class="nc" id="L99">                        .body(Map.of(&quot;error&quot;, validationError));</span>
+            }
+<span class="nc" id="L101">            existing.setUrl(update.getUrl());</span>
+        }
+
+<span class="pc bpc" id="L104" title="1 of 2 branches missed.">        if (update.getName() != null) {</span>
+<span class="fc" id="L105">            existing.setName(update.getName());</span>
+        }
+<span class="pc bpc" id="L107" title="1 of 2 branches missed.">        if (update.getSymbols() != null) {</span>
+<span class="fc" id="L108">            existing.setSymbols(update.getSymbols());</span>
+        }
+<span class="pc bpc" id="L110" title="1 of 2 branches missed.">        if (update.getAdapterType() != null) {</span>
+<span class="nc" id="L111">            existing.setAdapterType(update.getAdapterType());</span>
+        }
+
+<span class="fc" id="L114">        return ResponseEntity.ok(existing);</span>
+    }
+
+    /**
+     * Remove a feed connection. Stops it first if running.
+     */
+    @DeleteMapping(&quot;/{id}&quot;)
+    public ResponseEntity&lt;Void&gt; removeFeed(@PathVariable String id) {
+<span class="fc" id="L122">        boolean removed = feedManager.removeConnection(id);</span>
+<span class="fc bfc" id="L123" title="All 2 branches covered.">        if (!removed) {</span>
+<span class="fc" id="L124">            return ResponseEntity.notFound().build();</span>
+        }
+<span class="fc" id="L126">        validatorEngine.reset();</span>
+<span class="fc" id="L127">        return ResponseEntity.noContent().build();</span>
+    }
+
+    /**
+     * Start a feed connection (initiate WebSocket handshake).
+     * For LVWR_T connections, an optional SimulatorConfig body configures the simulator.
+     */
+    @PostMapping(&quot;/{id}/start&quot;)
+    public ResponseEntity&lt;?&gt; startFeed(@PathVariable String id,
+                                       @RequestBody(required = false) ScenarioConfig simulatorConfig) {
+<span class="fc" id="L137">        Connection conn = feedManager.getConnection(id);</span>
+<span class="fc bfc" id="L138" title="All 2 branches covered.">        if (conn == null) {</span>
+<span class="fc" id="L139">            return ResponseEntity.notFound().build();</span>
+        }
+<span class="fc" id="L141">        boolean started = feedManager.startConnection(id, simulatorConfig);</span>
+<span class="fc bfc" id="L142" title="All 2 branches covered.">        if (!started) {</span>
+<span class="fc" id="L143">            return ResponseEntity.badRequest()</span>
+<span class="fc" id="L144">                    .body(Map.of(&quot;error&quot;, &quot;Connection already active or failed to start&quot;));</span>
+        }
+<span class="fc" id="L146">        return ResponseEntity.ok(conn);</span>
+    }
+
+    /**
+     * Stop a feed connection (close WebSocket).
+     */
+    @PostMapping(&quot;/{id}/stop&quot;)
+    public ResponseEntity&lt;?&gt; stopFeed(@PathVariable String id) {
+<span class="fc" id="L154">        Connection conn = feedManager.getConnection(id);</span>
+<span class="fc bfc" id="L155" title="All 2 branches covered.">        if (conn == null) {</span>
+<span class="fc" id="L156">            return ResponseEntity.notFound().build();</span>
+        }
+<span class="fc" id="L158">        boolean stopped = feedManager.stopConnection(id);</span>
+<span class="fc bfc" id="L159" title="All 2 branches covered.">        if (!stopped) {</span>
+<span class="fc" id="L160">            return ResponseEntity.badRequest()</span>
+<span class="fc" id="L161">                    .body(Map.of(&quot;error&quot;, &quot;Connection already stopped&quot;));</span>
+        }
+<span class="fc" id="L163">        return ResponseEntity.ok(conn);</span>
+    }
+
+    /**
+     * Subscribe to additional symbols on an existing connection.
+     */
+    @PostMapping(&quot;/{id}/subscribe&quot;)
+    public ResponseEntity&lt;?&gt; subscribe(@PathVariable String id,
+                                       @RequestBody Map&lt;String, List&lt;String&gt;&gt; body) {
+<span class="fc" id="L172">        Connection conn = feedManager.getConnection(id);</span>
+<span class="fc bfc" id="L173" title="All 2 branches covered.">        if (conn == null) {</span>
+<span class="fc" id="L174">            return ResponseEntity.notFound().build();</span>
+        }
+<span class="fc" id="L176">        List&lt;String&gt; symbols = body.get(&quot;symbols&quot;);</span>
+<span class="pc bpc" id="L177" title="1 of 4 branches missed.">        if (symbols == null || symbols.isEmpty()) {</span>
+<span class="fc" id="L178">            return ResponseEntity.badRequest()</span>
+<span class="fc" id="L179">                    .body(Map.of(&quot;error&quot;, &quot;Request must include 'symbols' array&quot;));</span>
+        }
+
+<span class="fc" id="L182">        List&lt;String&gt; current = new ArrayList&lt;&gt;(conn.getSymbols());</span>
+<span class="fc bfc" id="L183" title="All 2 branches covered.">        for (String symbol : symbols) {</span>
+<span class="fc bfc" id="L184" title="All 2 branches covered.">            if (!current.contains(symbol)) {</span>
+<span class="fc" id="L185">                current.add(symbol);</span>
+            }
+<span class="fc" id="L187">        }</span>
+<span class="fc" id="L188">        conn.setSymbols(current);</span>
+<span class="fc" id="L189">        return ResponseEntity.ok(conn);</span>
+    }
+
+    /**
+     * Unsubscribe from symbols on an existing connection.
+     */
+    @PostMapping(&quot;/{id}/unsubscribe&quot;)
+    public ResponseEntity&lt;?&gt; unsubscribe(@PathVariable String id,
+                                         @RequestBody Map&lt;String, List&lt;String&gt;&gt; body) {
+<span class="fc" id="L198">        Connection conn = feedManager.getConnection(id);</span>
+<span class="fc bfc" id="L199" title="All 2 branches covered.">        if (conn == null) {</span>
+<span class="fc" id="L200">            return ResponseEntity.notFound().build();</span>
+        }
+<span class="fc" id="L202">        List&lt;String&gt; symbols = body.get(&quot;symbols&quot;);</span>
+<span class="pc bpc" id="L203" title="1 of 4 branches missed.">        if (symbols == null || symbols.isEmpty()) {</span>
+<span class="fc" id="L204">            return ResponseEntity.badRequest()</span>
+<span class="fc" id="L205">                    .body(Map.of(&quot;error&quot;, &quot;Request must include 'symbols' array&quot;));</span>
+        }
+
+<span class="fc" id="L208">        List&lt;String&gt; current = new ArrayList&lt;&gt;(conn.getSymbols());</span>
+<span class="fc" id="L209">        current.removeAll(symbols);</span>
+<span class="fc" id="L210">        conn.setSymbols(current);</span>
+<span class="fc" id="L211">        return ResponseEntity.ok(conn);</span>
+    }
+
+    // --- SSRF Prevention ---
+
+    /**
+     * Validates a WebSocket URL to prevent SSRF attacks.
+     * Blocks internal/private IPs, loopback, and non-WebSocket schemes.
+     *
+     * @return error message if invalid, null if valid
+     */
+    static String validateFeedUrl(String url) {
+<span class="fc bfc" id="L223" title="All 4 branches covered.">        if (url == null || url.isBlank()) {</span>
+<span class="fc" id="L224">            return &quot;URL is required&quot;;</span>
+        }
+
+        // Must be a WebSocket URL
+<span class="fc bfc" id="L228" title="All 4 branches covered.">        if (!url.startsWith(&quot;wss://&quot;) &amp;&amp; !url.startsWith(&quot;ws://&quot;)) {</span>
+<span class="fc" id="L229">            return &quot;URL must use ws:// or wss:// scheme&quot;;</span>
+        }
+
+        try {
+<span class="fc" id="L233">            URI uri = URI.create(url);</span>
+<span class="fc" id="L234">            String host = uri.getHost();</span>
+<span class="pc bpc" id="L235" title="2 of 4 branches missed.">            if (host == null || host.isBlank()) {</span>
+<span class="nc" id="L236">                return &quot;URL must have a valid host&quot;;</span>
+            }
+
+            // Resolve hostname — reject if DNS fails (unresolvable hostnames bypass IP checks)
+            InetAddress address;
+            try {
+<span class="fc" id="L242">                address = InetAddress.getByName(host);</span>
+<span class="fc" id="L243">            } catch (Exception e) {</span>
+<span class="fc" id="L244">                return &quot;URL rejected: hostname could not be resolved. Only resolvable hostnames are permitted.&quot;;</span>
+<span class="fc" id="L245">            }</span>
+
+<span class="fc bfc" id="L247" title="All 2 branches covered.">            if (address.isLoopbackAddress()) {</span>
+<span class="fc" id="L248">                return &quot;Loopback addresses are not allowed&quot;;</span>
+            }
+<span class="fc bfc" id="L250" title="All 2 branches covered.">            if (address.isSiteLocalAddress()) {</span>
+<span class="fc" id="L251">                return &quot;Private/internal IP addresses are not allowed&quot;;</span>
+            }
+<span class="pc bpc" id="L253" title="1 of 2 branches missed.">            if (address.isLinkLocalAddress()) {</span>
+<span class="nc" id="L254">                return &quot;Link-local addresses are not allowed&quot;;</span>
+            }
+<span class="pc bpc" id="L256" title="1 of 2 branches missed.">            if (address.isAnyLocalAddress()) {</span>
+<span class="nc" id="L257">                return &quot;Wildcard addresses are not allowed&quot;;</span>
+            }
+
+<span class="fc" id="L260">            return null; // Valid</span>
+<span class="nc" id="L261">        } catch (IllegalArgumentException e) {</span>
+<span class="nc" id="L262">            return &quot;Invalid URL format&quot;;</span>
+        }
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

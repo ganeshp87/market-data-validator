@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ValidatorProperties.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.config</a> &gt; <span class="el_source">ValidatorProperties.java</span></div><h1>ValidatorProperties.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.config;
+
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.stereotype.Component;
+
+/**
+ * Startup configuration for validator thresholds.
+ * Values are read from application.properties at startup and applied to the
+ * ValidatorEngine before any connections are loaded. The runtime
+ * PUT /api/validation/config API can override these values at any time.
+ */
+@Component
+@ConfigurationProperties(prefix = &quot;validator&quot;)
+<span class="fc" id="L14">public class ValidatorProperties {</span>
+
+<span class="fc" id="L16">    private Latency latency = new Latency();</span>
+<span class="fc" id="L17">    private Accuracy accuracy = new Accuracy();</span>
+<span class="fc" id="L18">    private Completeness completeness = new Completeness();</span>
+<span class="fc" id="L19">    private Throughput throughput = new Throughput();</span>
+
+<span class="fc" id="L21">    public Latency getLatency() { return latency; }</span>
+<span class="fc" id="L22">    public void setLatency(Latency latency) { this.latency = latency; }</span>
+
+<span class="fc" id="L24">    public Accuracy getAccuracy() { return accuracy; }</span>
+<span class="fc" id="L25">    public void setAccuracy(Accuracy accuracy) { this.accuracy = accuracy; }</span>
+
+<span class="fc" id="L27">    public Completeness getCompleteness() { return completeness; }</span>
+<span class="fc" id="L28">    public void setCompleteness(Completeness completeness) { this.completeness = completeness; }</span>
+
+<span class="fc" id="L30">    public Throughput getThroughput() { return throughput; }</span>
+<span class="fc" id="L31">    public void setThroughput(Throughput throughput) { this.throughput = throughput; }</span>
+
+<span class="fc" id="L33">    public static class Latency {</span>
+        /** p95 threshold above which status becomes WARN (ms). Default: 500. */
+<span class="fc" id="L35">        private long warnThresholdMs = 500;</span>
+<span class="fc" id="L36">        public long getWarnThresholdMs() { return warnThresholdMs; }</span>
+<span class="fc" id="L37">        public void setWarnThresholdMs(long warnThresholdMs) { this.warnThresholdMs = warnThresholdMs; }</span>
+    }
+
+<span class="fc" id="L40">    public static class Accuracy {</span>
+        /** Price spike threshold as a percentage (0–100). Default: 10 (= 10%). */
+<span class="fc" id="L42">        private double spikePctThreshold = 10.0;</span>
+<span class="fc" id="L43">        public double getSpikePctThreshold() { return spikePctThreshold; }</span>
+<span class="fc" id="L44">        public void setSpikePctThreshold(double spikePctThreshold) { this.spikePctThreshold = spikePctThreshold; }</span>
+    }
+
+<span class="fc" id="L47">    public static class Completeness {</span>
+        /** Gap between ticks above which a symbol is considered stale (ms). Default: 10000. */
+<span class="fc" id="L49">        private long staleThresholdMs = 10_000;</span>
+<span class="fc" id="L50">        public long getStaleThresholdMs() { return staleThresholdMs; }</span>
+<span class="fc" id="L51">        public void setStaleThresholdMs(long staleThresholdMs) { this.staleThresholdMs = staleThresholdMs; }</span>
+    }
+
+<span class="fc" id="L54">    public static class Throughput {</span>
+        /** Consecutive seconds of zero messages before FAIL is triggered. Default: 5. */
+<span class="fc" id="L56">        private int minMessagesPerSecond = 5;</span>
+<span class="fc" id="L57">        public int getMinMessagesPerSecond() { return minMessagesPerSecond; }</span>
+<span class="fc" id="L58">        public void setMinMessagesPerSecond(int minMessagesPerSecond) { this.minMessagesPerSecond = minMessagesPerSecond; }</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

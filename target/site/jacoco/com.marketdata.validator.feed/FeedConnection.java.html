@@ -1,0 +1,314 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FeedConnection.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.feed</a> &gt; <span class="el_source">FeedConnection.java</span></div><h1>FeedConnection.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.feed;
+
+import com.marketdata.validator.model.Connection;
+import com.marketdata.validator.model.Tick;
+import net.logstash.logback.argument.StructuredArguments;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.web.reactive.socket.WebSocketMessage;
+import org.springframework.web.reactive.socket.client.ReactorNettyWebSocketClient;
+import org.springframework.web.reactive.socket.client.WebSocketClient;
+import reactor.core.Disposable;
+import reactor.core.publisher.Mono;
+
+import java.net.URI;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Arrays;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
+
+/**
+ * Manages a single WebSocket connection to a market data feed.
+ * Handles: connect, disconnect, auto-reconnect with exponential backoff,
+ * message routing through FeedAdapter, and tick broadcasting.
+ */
+public class FeedConnection {
+
+<span class="fc" id="L32">    private static final Logger log = LoggerFactory.getLogger(FeedConnection.class);</span>
+    private static final int MAX_RECONNECT_ATTEMPTS = 10;
+    private static final long MAX_BACKOFF_MS = 30_000;
+    static final int OFFSET_SAMPLE_SIZE = 20;
+    // Assumed minimum one-way network latency (ms). Subtracted from the min sample
+    // so the offset compensates for clock skew only, not network delay.
+    static final long ASSUMED_MIN_NETWORK_MS = 5;
+
+    private final Connection connection;
+    private final FeedAdapter adapter;
+    private final WebSocketClient webSocketClient;
+<span class="fc" id="L43">    private final List&lt;Consumer&lt;Tick&gt;&gt; tickListeners = new CopyOnWriteArrayList&lt;&gt;();</span>
+
+    private Disposable wsSession;
+<span class="fc" id="L46">    private final AtomicInteger reconnectAttempts = new AtomicInteger(0);</span>
+<span class="fc" id="L47">    private final AtomicBoolean reconnecting = new AtomicBoolean(false);</span>
+<span class="fc" id="L48">    private volatile boolean intentionalDisconnect = false;</span>
+
+    // Reconnection lifecycle callbacks — wired by FeedManager to drive ReconnectionValidator
+    private volatile Runnable disconnectCallback;
+    private volatile Consumer&lt;Duration&gt; reconnectCallback;
+    private volatile Runnable reconnectFailedCallback;
+    private volatile Instant disconnectTime;
+
+    // Clock offset estimation: adjusts for skew between local clock and exchange
+<span class="fc" id="L57">    private final long[] offsetSamples = new long[OFFSET_SAMPLE_SIZE];</span>
+<span class="fc" id="L58">    private int offsetSampleCount = 0;</span>
+<span class="fc" id="L59">    private volatile long clockOffsetMs = 0;</span>
+<span class="fc" id="L60">    private volatile boolean offsetCalibrated = false;</span>
+
+    public FeedConnection(Connection connection, FeedAdapter adapter) {
+<span class="fc" id="L63">        this(connection, adapter, new ReactorNettyWebSocketClient());</span>
+<span class="fc" id="L64">    }</span>
+
+    /**
+     * Constructor with injectable WebSocketClient — used for testing.
+     */
+    public FeedConnection(Connection connection, FeedAdapter adapter,
+<span class="fc" id="L70">                          WebSocketClient webSocketClient) {</span>
+<span class="fc" id="L71">        this.connection = connection;</span>
+<span class="fc" id="L72">        this.adapter = adapter;</span>
+<span class="fc" id="L73">        this.webSocketClient = webSocketClient;</span>
+<span class="fc" id="L74">    }</span>
+
+    /**
+     * Connect to the WebSocket feed and start receiving messages.
+     */
+    public void connect() {
+<span class="nc" id="L80">        intentionalDisconnect = false;</span>
+<span class="nc" id="L81">        reconnecting.set(false);</span>
+<span class="nc" id="L82">        resetClockOffset();</span>
+<span class="nc" id="L83">        doConnect();</span>
+<span class="nc" id="L84">    }</span>
+
+    /**
+     * Intentionally disconnect — no auto-reconnect.
+     */
+    public void disconnect() {
+<span class="fc" id="L90">        intentionalDisconnect = true;</span>
+<span class="pc bpc" id="L91" title="3 of 4 branches missed.">        if (wsSession != null &amp;&amp; !wsSession.isDisposed()) {</span>
+<span class="nc" id="L92">            wsSession.dispose();</span>
+        }
+<span class="fc" id="L94">        connection.setStatus(Connection.Status.DISCONNECTED);</span>
+<span class="fc" id="L95">        log.info(&quot;Disconnected from feed: {}&quot;, connection.getName());</span>
+<span class="fc" id="L96">    }</span>
+
+    /**
+     * Register a listener that receives every parsed Tick.
+     */
+    public void addTickListener(Consumer&lt;Tick&gt; listener) {
+<span class="fc" id="L102">        tickListeners.add(listener);</span>
+<span class="fc" id="L103">    }</span>
+
+    /**
+     * Remove a tick listener.
+     */
+    public void removeTickListener(Consumer&lt;Tick&gt; listener) {
+<span class="fc" id="L109">        tickListeners.remove(listener);</span>
+<span class="fc" id="L110">    }</span>
+
+<span class="fc" id="L112">    public void setDisconnectCallback(Runnable cb) { this.disconnectCallback = cb; }</span>
+<span class="nc" id="L113">    public void setReconnectCallback(Consumer&lt;Duration&gt; cb) { this.reconnectCallback = cb; }</span>
+<span class="nc" id="L114">    public void setReconnectFailedCallback(Runnable cb) { this.reconnectFailedCallback = cb; }</span>
+
+    public Connection getConnection() {
+<span class="fc" id="L117">        return connection;</span>
+    }
+
+    public int getReconnectAttempts() {
+<span class="fc" id="L121">        return reconnectAttempts.get();</span>
+    }
+
+    public boolean isConnected() {
+<span class="fc bfc" id="L125" title="All 2 branches covered.">        return connection.getStatus() == Connection.Status.CONNECTED;</span>
+    }
+
+    // --- Internal ---
+
+    private void doConnect() {
+<span class="fc" id="L131">        URI uri = URI.create(connection.getUrl());</span>
+<span class="fc" id="L132">        log.info(&quot;Connecting to feed: {} {}&quot;,</span>
+<span class="fc" id="L133">                StructuredArguments.keyValue(&quot;feed&quot;, connection.getName()),</span>
+<span class="fc" id="L134">                StructuredArguments.keyValue(&quot;url&quot;, uri));</span>
+
+<span class="nc" id="L136">        wsSession = webSocketClient.execute(uri, session -&gt; {</span>
+            // On connect: mark connected, reset reconnect counter, subscribe
+<span class="nc" id="L138">            connection.setStatus(Connection.Status.CONNECTED);</span>
+<span class="nc" id="L139">            connection.setConnectedAt(Instant.now());</span>
+<span class="nc" id="L140">            reconnectAttempts.set(0);</span>
+<span class="nc" id="L141">            log.info(&quot;Connected to feed: {} {}&quot;,</span>
+<span class="nc" id="L142">                    StructuredArguments.keyValue(&quot;feed&quot;, connection.getName()),</span>
+<span class="nc" id="L143">                    StructuredArguments.keyValue(&quot;event&quot;, &quot;connected&quot;));</span>
+
+            // Notify reconnect lifecycle if this was a recovery (disconnectTime set by handleDisconnect)
+<span class="nc" id="L146">            Instant dt = disconnectTime;</span>
+<span class="nc bnc" id="L147" title="All 2 branches missed.">            if (dt != null) {</span>
+<span class="nc" id="L148">                disconnectTime = null;</span>
+<span class="nc" id="L149">                Consumer&lt;Duration&gt; rcb = reconnectCallback;</span>
+<span class="nc bnc" id="L150" title="All 2 branches missed.">                if (rcb != null) rcb.accept(Duration.between(dt, Instant.now()));</span>
+            }
+
+            // Send subscribe message
+<span class="nc" id="L154">            String subscribeMsg = adapter.getSubscribeMessage(connection.getSymbols());</span>
+<span class="nc" id="L155">            Mono&lt;Void&gt; send = session.send(</span>
+<span class="nc" id="L156">                    Mono.just(session.textMessage(subscribeMsg)));</span>
+
+            // Receive messages
+<span class="nc" id="L159">            Mono&lt;Void&gt; receive = session.receive()</span>
+<span class="nc" id="L160">                    .map(WebSocketMessage::getPayloadAsText)</span>
+<span class="nc" id="L161">                    .doOnNext(this::handleMessage)</span>
+<span class="nc" id="L162">                    .then();</span>
+
+<span class="nc" id="L164">            return send.thenMany(receive).then();</span>
+        })
+<span class="nc" id="L166">        .doOnError(error -&gt; {</span>
+<span class="nc" id="L167">            log.warn(&quot;WebSocket error for {} {} {}&quot;,</span>
+<span class="nc" id="L168">                    StructuredArguments.keyValue(&quot;feed&quot;, connection.getName()),</span>
+<span class="nc" id="L169">                    StructuredArguments.keyValue(&quot;event&quot;, &quot;ws_error&quot;),</span>
+<span class="nc" id="L170">                    StructuredArguments.keyValue(&quot;error&quot;, error.getMessage()));</span>
+<span class="nc" id="L171">            handleDisconnect();</span>
+<span class="nc" id="L172">        })</span>
+<span class="nc" id="L173">        .doOnTerminate(() -&gt; {</span>
+<span class="nc bnc" id="L174" title="All 2 branches missed.">            if (!intentionalDisconnect) {</span>
+<span class="nc" id="L175">                handleDisconnect();</span>
+            }
+<span class="nc" id="L177">        })</span>
+<span class="nc" id="L178">        .subscribe();</span>
+<span class="nc" id="L179">    }</span>
+
+    void handleMessage(String rawMessage) {
+<span class="pc bpc" id="L182" title="1 of 2 branches missed.">        if (adapter.isHeartbeat(rawMessage)) {</span>
+<span class="nc" id="L183">            return;</span>
+        }
+
+<span class="fc" id="L186">        Tick tick = adapter.parseTick(rawMessage);</span>
+<span class="pc bpc" id="L187" title="1 of 2 branches missed.">        if (tick == null) {</span>
+<span class="nc" id="L188">            return;</span>
+        }
+
+<span class="fc" id="L191">        tick.setFeedId(connection.getId());</span>
+<span class="fc" id="L192">        connection.recordTick();</span>
+<span class="fc" id="L193">        applyClockOffsetCorrection(tick);</span>
+
+        // Broadcast to all listeners
+<span class="fc bfc" id="L196" title="All 2 branches covered.">        for (Consumer&lt;Tick&gt; listener : tickListeners) {</span>
+            try {
+<span class="fc" id="L198">                listener.accept(tick);</span>
+<span class="nc" id="L199">            } catch (Exception e) {</span>
+<span class="nc" id="L200">                log.error(&quot;Tick listener error: {}&quot;, e.getMessage());</span>
+<span class="fc" id="L201">            }</span>
+<span class="fc" id="L202">        }</span>
+<span class="fc" id="L203">    }</span>
+
+    /**
+     * Estimates clock offset from the first N ticks.
+     * Uses min(rawLatency) - ASSUMED_MIN_NETWORK_MS so the offset removes only
+     * the clock skew component, preserving real network latency in the output.
+     */
+    void applyClockOffsetCorrection(Tick tick) {
+<span class="pc bpc" id="L211" title="1 of 4 branches missed.">        if (tick.getExchangeTimestamp() == null || tick.getReceivedTimestamp() == null) {</span>
+<span class="fc" id="L212">            return;</span>
+        }
+
+<span class="fc" id="L215">        long rawMs = Duration.between(tick.getExchangeTimestamp(), tick.getReceivedTimestamp()).toMillis();</span>
+
+<span class="fc bfc" id="L217" title="All 2 branches covered.">        if (!offsetCalibrated) {</span>
+<span class="fc" id="L218">            offsetSamples[offsetSampleCount++] = rawMs;</span>
+<span class="fc bfc" id="L219" title="All 2 branches covered.">            if (offsetSampleCount &gt;= OFFSET_SAMPLE_SIZE) {</span>
+<span class="fc" id="L220">                long minRaw = Arrays.stream(offsetSamples).min().orElse(0);</span>
+<span class="fc" id="L221">                clockOffsetMs = minRaw - ASSUMED_MIN_NETWORK_MS;</span>
+<span class="fc" id="L222">                offsetCalibrated = true;</span>
+<span class="fc" id="L223">                log.info(&quot;Clock offset calibrated: {}ms (minRaw={}ms, baseline={}ms) from {} samples {}&quot;,</span>
+<span class="fc" id="L224">                        clockOffsetMs, minRaw, ASSUMED_MIN_NETWORK_MS, OFFSET_SAMPLE_SIZE,</span>
+<span class="fc" id="L225">                        StructuredArguments.keyValue(&quot;event&quot;, &quot;clock_offset_calibrated&quot;));</span>
+            }
+        }
+
+<span class="fc bfc" id="L229" title="All 2 branches covered.">        if (clockOffsetMs != 0) {</span>
+<span class="fc" id="L230">            tick.setReceivedTimestamp(tick.getReceivedTimestamp().minusMillis(clockOffsetMs));</span>
+        }
+<span class="fc" id="L232">    }</span>
+
+    void resetClockOffset() {
+<span class="fc" id="L235">        offsetSampleCount = 0;</span>
+<span class="fc" id="L236">        clockOffsetMs = 0;</span>
+<span class="fc" id="L237">        offsetCalibrated = false;</span>
+<span class="fc" id="L238">    }</span>
+
+    long getClockOffsetMs() {
+<span class="fc" id="L241">        return clockOffsetMs;</span>
+    }
+
+    boolean isOffsetCalibrated() {
+<span class="fc" id="L245">        return offsetCalibrated;</span>
+    }
+
+    /**
+     * Handle an unexpected disconnection. Applies CAS guard to prevent
+     * duplicate reconnects when both doOnError and doOnTerminate fire.
+     * Package-visible for testing the reconnect guard.
+     */
+    void handleDisconnect() {
+<span class="fc bfc" id="L254" title="All 2 branches covered.">        if (intentionalDisconnect) {</span>
+<span class="fc" id="L255">            return;</span>
+        }
+
+        // Guard: only one reconnect per disconnect event (doOnError + doOnTerminate both fire)
+<span class="fc bfc" id="L259" title="All 2 branches covered.">        if (!reconnecting.compareAndSet(false, true)) {</span>
+<span class="fc" id="L260">            return;</span>
+        }
+
+        // Record when the disconnect happened and notify the reconnection validator
+<span class="fc" id="L264">        disconnectTime = Instant.now();</span>
+<span class="fc" id="L265">        Runnable dcb = disconnectCallback;</span>
+<span class="fc bfc" id="L266" title="All 2 branches covered.">        if (dcb != null) dcb.run();</span>
+
+        // Different exchange servers may have different clock offsets — recalibrate after reconnect
+        // so latency metrics are not silently skewed by a stale offset from the previous server.
+<span class="fc" id="L270">        resetClockOffset();</span>
+
+<span class="fc" id="L272">        int attempt = reconnectAttempts.incrementAndGet();</span>
+<span class="pc bpc" id="L273" title="1 of 2 branches missed.">        if (attempt &gt; MAX_RECONNECT_ATTEMPTS) {</span>
+<span class="nc" id="L274">            connection.setStatus(Connection.Status.ERROR);</span>
+<span class="nc" id="L275">            log.error(&quot;Feed {} failed after {} reconnect attempts {}&quot;,</span>
+<span class="nc" id="L276">                    StructuredArguments.keyValue(&quot;feed&quot;, connection.getName()),</span>
+<span class="nc" id="L277">                    MAX_RECONNECT_ATTEMPTS,</span>
+<span class="nc" id="L278">                    StructuredArguments.keyValue(&quot;event&quot;, &quot;reconnect_exhausted&quot;));</span>
+<span class="nc" id="L279">            Runnable rfcb = reconnectFailedCallback;</span>
+<span class="nc bnc" id="L280" title="All 2 branches missed.">            if (rfcb != null) rfcb.run();</span>
+<span class="nc" id="L281">            return;</span>
+        }
+
+<span class="fc" id="L284">        connection.setStatus(Connection.Status.RECONNECTING);</span>
+<span class="fc" id="L285">        long backoffMs = calculateBackoff(attempt);</span>
+<span class="fc" id="L286">        log.info(&quot;Reconnecting {} in {}ms (attempt {}/{}) {}&quot;,</span>
+<span class="fc" id="L287">                StructuredArguments.keyValue(&quot;feed&quot;, connection.getName()),</span>
+<span class="fc" id="L288">                backoffMs, attempt, MAX_RECONNECT_ATTEMPTS,</span>
+<span class="fc" id="L289">                StructuredArguments.keyValue(&quot;event&quot;, &quot;reconnecting&quot;));</span>
+
+        // Schedule reconnect on a virtual thread (or daemon thread)
+<span class="fc" id="L292">        Thread.ofVirtual().start(() -&gt; {</span>
+            try {
+<span class="fc" id="L294">                Thread.sleep(backoffMs);</span>
+<span class="pc bpc" id="L295" title="1 of 2 branches missed.">                if (!intentionalDisconnect) {</span>
+<span class="fc" id="L296">                    reconnecting.set(false);</span>
+<span class="nc" id="L297">                    doConnect();</span>
+                }
+<span class="nc" id="L299">            } catch (InterruptedException e) {</span>
+<span class="nc" id="L300">                Thread.currentThread().interrupt();</span>
+<span class="nc" id="L301">            }</span>
+<span class="nc" id="L302">        });</span>
+<span class="fc" id="L303">    }</span>
+
+    /**
+     * Exponential backoff: min(2^attempt * 1000, 30000) ms.
+     * Visible for testing.
+     */
+    long calculateBackoff(int attempt) {
+<span class="fc" id="L310">        long backoff = (long) Math.pow(2, attempt - 1) * 1000;</span>
+<span class="fc" id="L311">        return Math.min(backoff, MAX_BACKOFF_MS);</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

@@ -1,0 +1,249 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ThroughputValidator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.validator</a> &gt; <span class="el_source">ThroughputValidator.java</span></div><h1>ThroughputValidator.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.validator;
+
+import com.marketdata.validator.model.Tick;
+import com.marketdata.validator.model.ValidationResult;
+import com.marketdata.validator.model.ValidationResult.Area;
+import com.marketdata.validator.model.ValidationResult.Status;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
+
+import java.time.Instant;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
+
+/**
+ * Monitors message throughput, detects rate drops and zero-throughput stalls.
+ *
+ * Blueprint Section 9.5:
+ *   Every 1 second:
+ *     1. Count messages received in the last second
+ *     2. Track rolling average (last 60 seconds)
+ *     3. If current throughput &lt; 50% of rolling average → WARN
+ *     4. Track max throughput seen
+ *
+ * State tracked:
+ *   - currentSecondCount (AtomicLong)
+ *   - secondCounts: CircularBuffer&lt;Long&gt; (size 60)
+ *   - rollingAverage: double
+ *   - maxThroughput: long
+ *   - dropDetected: boolean
+ *
+ * Result:
+ *   PASS: no drop detected, throughput &gt; 0
+ *   WARN: throughput dropped &gt; 50% from average
+ *   FAIL: throughput == 0 for &gt; 5 seconds while feed is connected
+ */
+@Component
+public class ThroughputValidator implements Validator {
+
+<span class="fc" id="L42">    private static final Logger log = LoggerFactory.getLogger(ThroughputValidator.class);</span>
+
+    // --- Configurable thresholds ---
+    private static final int DEFAULT_WINDOW_SIZE = 60;         // seconds
+    private static final double DEFAULT_DROP_PERCENT = 0.50;   // 50% drop = WARN
+    private static final int DEFAULT_ZERO_THRESHOLD_SECS = 5;  // 0 msg/s for 5s = FAIL
+
+    // --- Circular buffer for per-second counts ---
+    // bufferLock guards secondCounts[], head, and filled: tick() (timer thread) writes
+    // and reads the array to compute the rolling average; without a lock, concurrent
+    // tick() calls can interleave writes and corrupt the rolling average calculation.
+<span class="fc" id="L53">    private final ReentrantLock bufferLock = new ReentrantLock();</span>
+    private final long[] secondCounts;
+<span class="fc" id="L55">    private int head = 0;           // Next write position</span>
+<span class="fc" id="L56">    private int filled = 0;        // How many slots are filled (up to windowSize)</span>
+    private final int windowSize;
+
+    // --- Counters ---
+<span class="fc" id="L60">    private final AtomicLong currentSecondCount = new AtomicLong(0);</span>
+<span class="fc" id="L61">    private volatile long lastSecondRate = 0;</span>
+<span class="fc" id="L62">    private volatile long maxThroughput = 0;</span>
+<span class="fc" id="L63">    private volatile double rollingAverage = 0.0;</span>
+<span class="fc" id="L64">    private volatile boolean dropDetected = false;</span>
+<span class="fc" id="L65">    private volatile int consecutiveZeroSeconds = 0;</span>
+<span class="fc" id="L66">    private volatile boolean feedConnected = false;</span>
+<span class="fc" id="L67">    private volatile boolean zeroThroughputFail = false;</span>
+
+    // Idempotency: skip already-processed sequence numbers per symbol
+<span class="fc" id="L70">    private final Map&lt;String, Long&gt; lastSequenceBySymbol = new ConcurrentHashMap&lt;&gt;();</span>
+
+    // Total ticks processed (for details)
+<span class="fc" id="L73">    private final AtomicLong totalTicks = new AtomicLong(0);</span>
+
+    // Configurable
+<span class="fc" id="L76">    private double dropPercent = DEFAULT_DROP_PERCENT;</span>
+<span class="fc" id="L77">    private int zeroThresholdSecs = DEFAULT_ZERO_THRESHOLD_SECS;</span>
+
+    public ThroughputValidator() {
+<span class="fc" id="L80">        this(DEFAULT_WINDOW_SIZE);</span>
+<span class="fc" id="L81">    }</span>
+
+    /** Visible for testing — allows custom window size. */
+<span class="fc" id="L84">    ThroughputValidator(int windowSize) {</span>
+<span class="fc" id="L85">        this.windowSize = windowSize;</span>
+<span class="fc" id="L86">        this.secondCounts = new long[windowSize];</span>
+<span class="fc" id="L87">    }</span>
+
+    @Override
+    public String getArea() {
+<span class="fc" id="L91">        return Area.THROUGHPUT.name();</span>
+    }
+
+    /**
+     * Called for every tick. Increments the current-second counter.
+     * O(1) — just an atomic increment + idempotency check.
+     */
+    @Override
+    public void onTick(Tick tick) {
+        // Idempotent: skip already-processed sequence numbers
+<span class="fc" id="L101">        Long lastSeq = lastSequenceBySymbol.get(tick.getSymbol());</span>
+<span class="fc bfc" id="L102" title="All 4 branches covered.">        if (lastSeq != null &amp;&amp; tick.getSequenceNum() &lt;= lastSeq) {</span>
+<span class="fc" id="L103">            return;</span>
+        }
+
+<span class="fc" id="L106">        currentSecondCount.incrementAndGet();</span>
+<span class="fc" id="L107">        totalTicks.incrementAndGet();</span>
+
+<span class="fc" id="L109">        lastSequenceBySymbol.put(tick.getSymbol(), tick.getSequenceNum());</span>
+<span class="fc" id="L110">    }</span>
+
+    /**
+     * Called by external timer every 1 second to &quot;close&quot; the current window slot.
+     * This snapshots the count, writes it into the circular buffer,
+     * recalculates the rolling average, and detects drops/stalls.
+     */
+    public void tick() {
+<span class="fc" id="L118">        long rate = currentSecondCount.getAndSet(0);</span>
+<span class="fc" id="L119">        lastSecondRate = rate;</span>
+
+<span class="fc" id="L121">        bufferLock.lock();</span>
+        try {
+            // Write into circular buffer
+<span class="fc" id="L124">            secondCounts[head] = rate;</span>
+<span class="fc" id="L125">            head = (head + 1) % windowSize;</span>
+<span class="fc bfc" id="L126" title="All 2 branches covered.">            if (filled &lt; windowSize) filled++;</span>
+
+            // Update max
+<span class="fc bfc" id="L129" title="All 2 branches covered.">            if (rate &gt; maxThroughput) {</span>
+<span class="fc" id="L130">                maxThroughput = rate;</span>
+            }
+
+            // Calculate rolling average
+<span class="fc" id="L134">            long sum = 0;</span>
+<span class="fc bfc" id="L135" title="All 2 branches covered.">            for (int i = 0; i &lt; filled; i++) {</span>
+<span class="fc" id="L136">                sum += secondCounts[i];</span>
+            }
+<span class="pc bpc" id="L138" title="1 of 2 branches missed.">            rollingAverage = filled &gt; 0 ? (double) sum / filled : 0.0;</span>
+        } finally {
+<span class="fc" id="L140">            bufferLock.unlock();</span>
+        }
+
+        // Drop detection: current rate &lt; 50% of rolling average (only check after warmup)
+<span class="fc bfc" id="L144" title="All 4 branches covered.">        if (filled &gt;= 5 &amp;&amp; rollingAverage &gt; 0) {</span>
+<span class="fc bfc" id="L145" title="All 2 branches covered.">            dropDetected = rate &lt; rollingAverage * dropPercent;</span>
+        } else {
+<span class="fc" id="L147">            dropDetected = false;</span>
+        }
+
+        // Zero throughput detection
+<span class="fc bfc" id="L151" title="All 4 branches covered.">        if (rate == 0 &amp;&amp; feedConnected) {</span>
+<span class="fc" id="L152">            consecutiveZeroSeconds++;</span>
+<span class="fc bfc" id="L153" title="All 2 branches covered.">            if (consecutiveZeroSeconds &gt;= zeroThresholdSecs) {</span>
+<span class="fc" id="L154">                zeroThroughputFail = true;</span>
+            }
+        } else {
+<span class="fc" id="L157">            consecutiveZeroSeconds = 0;</span>
+<span class="fc bfc" id="L158" title="All 2 branches covered.">            if (rate &gt; 0) {</span>
+<span class="fc" id="L159">                zeroThroughputFail = false;</span>
+            }
+        }
+<span class="fc" id="L162">    }</span>
+
+    /** Notify this validator that a feed is connected. */
+    public void setFeedConnected(boolean connected) {
+<span class="fc" id="L166">        this.feedConnected = connected;</span>
+<span class="fc bfc" id="L167" title="All 2 branches covered.">        if (!connected) {</span>
+<span class="fc" id="L168">            consecutiveZeroSeconds = 0;</span>
+<span class="fc" id="L169">            zeroThroughputFail = false;</span>
+        }
+<span class="fc" id="L171">    }</span>
+
+    @Override
+    public ValidationResult getResult() {
+<span class="fc" id="L175">        long total = totalTicks.get();</span>
+<span class="fc bfc" id="L176" title="All 2 branches covered.">        if (total == 0) {</span>
+<span class="fc" id="L177">            return ValidationResult.pass(Area.THROUGHPUT,</span>
+                    &quot;No ticks processed yet&quot;, 0.0, 0.0);
+        }
+
+        Status status;
+        String message;
+
+<span class="fc bfc" id="L184" title="All 2 branches covered.">        if (zeroThroughputFail) {</span>
+<span class="fc" id="L185">            status = Status.FAIL;</span>
+<span class="fc" id="L186">            message = String.format(&quot;Zero throughput for %d+ seconds while feed connected&quot;,</span>
+<span class="fc" id="L187">                    zeroThresholdSecs);</span>
+<span class="fc bfc" id="L188" title="All 2 branches covered.">        } else if (dropDetected) {</span>
+<span class="fc" id="L189">            status = Status.WARN;</span>
+<span class="fc" id="L190">            message = String.format(&quot;Throughput dropped: %d msg/s (avg: %.0f msg/s)&quot;,</span>
+<span class="fc" id="L191">                    lastSecondRate, rollingAverage);</span>
+        } else {
+<span class="fc" id="L193">            status = Status.PASS;</span>
+<span class="fc" id="L194">            message = String.format(&quot;%d msg/s (avg: %.0f, max: %d)&quot;,</span>
+<span class="fc" id="L195">                    lastSecondRate, rollingAverage, maxThroughput);</span>
+        }
+
+<span class="fc" id="L198">        ValidationResult result = new ValidationResult(</span>
+                Area.THROUGHPUT, status, message, lastSecondRate, rollingAverage
+        );
+<span class="fc" id="L201">        result.getDetails().put(&quot;messagesPerSecond&quot;, lastSecondRate);</span>
+<span class="fc" id="L202">        result.getDetails().put(&quot;rollingAverage&quot;, rollingAverage);</span>
+<span class="fc" id="L203">        result.getDetails().put(&quot;maxThroughput&quot;, maxThroughput);</span>
+<span class="fc" id="L204">        result.getDetails().put(&quot;totalTicks&quot;, total);</span>
+<span class="fc" id="L205">        result.getDetails().put(&quot;dropDetected&quot;, dropDetected);</span>
+<span class="fc" id="L206">        result.getDetails().put(&quot;consecutiveZeroSeconds&quot;, consecutiveZeroSeconds);</span>
+<span class="fc" id="L207">        result.getDetails().put(&quot;windowSize&quot;, filled);</span>
+
+<span class="fc" id="L209">        return result;</span>
+    }
+
+    @Override
+    public void reset() {
+<span class="fc" id="L214">        currentSecondCount.set(0);</span>
+<span class="fc" id="L215">        lastSecondRate = 0;</span>
+<span class="fc" id="L216">        maxThroughput = 0;</span>
+<span class="fc" id="L217">        rollingAverage = 0.0;</span>
+<span class="fc" id="L218">        dropDetected = false;</span>
+<span class="fc" id="L219">        consecutiveZeroSeconds = 0;</span>
+<span class="fc" id="L220">        zeroThroughputFail = false;</span>
+<span class="fc" id="L221">        head = 0;</span>
+<span class="fc" id="L222">        filled = 0;</span>
+<span class="fc bfc" id="L223" title="All 2 branches covered.">        for (int i = 0; i &lt; windowSize; i++) {</span>
+<span class="fc" id="L224">            secondCounts[i] = 0;</span>
+        }
+<span class="fc" id="L226">        lastSequenceBySymbol.clear();</span>
+<span class="fc" id="L227">        totalTicks.set(0);</span>
+<span class="fc" id="L228">    }</span>
+
+    @Override
+    public void configure(Map&lt;String, Object&gt; config) {
+<span class="fc bfc" id="L232" title="All 2 branches covered.">        if (config.containsKey(&quot;dropPercent&quot;)) {</span>
+<span class="fc" id="L233">            this.dropPercent = ((Number) config.get(&quot;dropPercent&quot;)).doubleValue();</span>
+        }
+<span class="fc bfc" id="L235" title="All 2 branches covered.">        if (config.containsKey(&quot;zeroThresholdSecs&quot;)) {</span>
+<span class="fc" id="L236">            this.zeroThresholdSecs = ((Number) config.get(&quot;zeroThresholdSecs&quot;)).intValue();</span>
+        }
+<span class="fc" id="L238">    }</span>
+
+    // --- Accessors for testing ---
+
+<span class="fc" id="L242">    public long getLastSecondRate() { return lastSecondRate; }</span>
+<span class="fc" id="L243">    public double getRollingAverage() { return rollingAverage; }</span>
+<span class="fc" id="L244">    public long getMaxThroughput() { return maxThroughput; }</span>
+<span class="fc" id="L245">    public boolean isDropDetected() { return dropDetected; }</span>
+<span class="fc" id="L246">    public int getConsecutiveZeroSeconds() { return consecutiveZeroSeconds; }</span>
+<span class="fc" id="L247">    public long getTotalTicks() { return totalTicks.get(); }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

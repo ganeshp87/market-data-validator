@@ -1,0 +1,216 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SessionController.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.controller</a> &gt; <span class="el_source">SessionController.java</span></div><h1>SessionController.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.controller;
+
+import com.marketdata.validator.model.Session;
+import com.marketdata.validator.model.Tick;
+import com.marketdata.validator.model.ValidationResult;
+import com.marketdata.validator.session.SessionExporter;
+import com.marketdata.validator.session.SessionRecorder;
+import com.marketdata.validator.session.SessionReplayer;
+import com.marketdata.validator.store.SessionStore;
+import com.marketdata.validator.store.TickStore;
+import com.marketdata.validator.validator.ValidatorEngine;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+
+/**
+ * REST controller for recording sessions, replay, and export.
+ *
+ * Endpoints:
+ *   GET    /api/sessions                     — list all sessions
+ *   POST   /api/sessions/start               — start recording
+ *   POST   /api/sessions/{id}/stop           — stop recording
+ *   DELETE /api/sessions/{id}                — delete session + its ticks
+ *   GET    /api/sessions/{id}/ticks          — get ticks from session
+ *   GET    /api/sessions/{id}/export?format= — export session as JSON or CSV
+ *   POST   /api/sessions/{id}/replay         — replay ticks through validators
+ */
+@RestController
+@RequestMapping(&quot;/api/sessions&quot;)
+public class SessionController {
+
+<span class="fc" id="L38">    private static final Logger log = LoggerFactory.getLogger(SessionController.class);</span>
+
+    private final SessionRecorder recorder;
+    private final SessionStore sessionStore;
+    private final TickStore tickStore;
+    private final ValidatorEngine engine;
+    private final SessionExporter exporter;
+    private final SessionReplayer replayer;
+
+    public SessionController(SessionRecorder recorder,
+                             SessionStore sessionStore,
+                             TickStore tickStore,
+                             ValidatorEngine engine,
+                             SessionExporter exporter,
+<span class="fc" id="L52">                             SessionReplayer replayer) {</span>
+<span class="fc" id="L53">        this.recorder = recorder;</span>
+<span class="fc" id="L54">        this.sessionStore = sessionStore;</span>
+<span class="fc" id="L55">        this.tickStore = tickStore;</span>
+<span class="fc" id="L56">        this.engine = engine;</span>
+<span class="fc" id="L57">        this.exporter = exporter;</span>
+<span class="fc" id="L58">        this.replayer = replayer;</span>
+<span class="fc" id="L59">    }</span>
+
+    /**
+     * List all recorded sessions, newest first.
+     */
+    @GetMapping
+    public List&lt;Session&gt; listSessions() {
+<span class="fc" id="L66">        return sessionStore.findAll();</span>
+    }
+
+    /**
+     * Start a new recording session.
+     * Body: { &quot;name&quot;: &quot;btc-morning-session&quot;, &quot;feedId&quot;: &quot;feed-uuid&quot; }
+     */
+    @PostMapping(&quot;/start&quot;)
+    public ResponseEntity&lt;?&gt; startRecording(@RequestBody Map&lt;String, String&gt; body) {
+<span class="fc" id="L75">        String name = body.get(&quot;name&quot;);</span>
+<span class="fc" id="L76">        String feedId = body.get(&quot;feedId&quot;);</span>
+
+<span class="pc bpc" id="L78" title="1 of 4 branches missed.">        if (name == null || name.isBlank()) {</span>
+<span class="fc" id="L79">            return ResponseEntity.badRequest()</span>
+<span class="fc" id="L80">                    .body(Map.of(&quot;error&quot;, &quot;'name' is required&quot;));</span>
+        }
+<span class="pc bpc" id="L82" title="1 of 4 branches missed.">        if (feedId == null || feedId.isBlank()) {</span>
+<span class="fc" id="L83">            return ResponseEntity.badRequest()</span>
+<span class="fc" id="L84">                    .body(Map.of(&quot;error&quot;, &quot;'feedId' is required&quot;));</span>
+        }
+
+<span class="fc bfc" id="L87" title="All 2 branches covered.">        if (recorder.isRecording()) {</span>
+<span class="fc" id="L88">            return ResponseEntity.badRequest()</span>
+<span class="fc" id="L89">                    .body(Map.of(&quot;error&quot;, &quot;Already recording session: &quot;</span>
+<span class="fc" id="L90">                            + recorder.getCurrentSession().getId()));</span>
+        }
+
+<span class="fc" id="L93">        Session session = recorder.start(name, feedId);</span>
+<span class="fc" id="L94">        return ResponseEntity.status(201).body(session);</span>
+    }
+
+    /**
+     * Stop the current recording session.
+     */
+    @PostMapping(&quot;/{id}/stop&quot;)
+    public ResponseEntity&lt;?&gt; stopRecording(@PathVariable long id) {
+<span class="fc bfc" id="L102" title="All 2 branches covered.">        if (!recorder.isRecording()) {</span>
+<span class="fc" id="L103">            return ResponseEntity.badRequest()</span>
+<span class="fc" id="L104">                    .body(Map.of(&quot;error&quot;, &quot;No active recording session&quot;));</span>
+        }
+
+<span class="fc" id="L107">        Session current = recorder.getCurrentSession();</span>
+<span class="fc bfc" id="L108" title="All 2 branches covered.">        if (current.getId() != id) {</span>
+<span class="fc" id="L109">            return ResponseEntity.badRequest()</span>
+<span class="fc" id="L110">                    .body(Map.of(&quot;error&quot;,</span>
+<span class="fc" id="L111">                            &quot;Session &quot; + id + &quot; is not the active recording. Active: &quot; + current.getId()));</span>
+        }
+
+<span class="fc" id="L114">        Session completed = recorder.stop();</span>
+<span class="fc" id="L115">        return ResponseEntity.ok(completed);</span>
+    }
+
+    /**
+     * Delete a session and all its ticks.
+     */
+    @DeleteMapping(&quot;/{id}&quot;)
+    public ResponseEntity&lt;?&gt; deleteSession(@PathVariable long id) {
+<span class="fc" id="L123">        Optional&lt;Session&gt; session = sessionStore.findById(id);</span>
+<span class="fc bfc" id="L124" title="All 2 branches covered.">        if (session.isEmpty()) {</span>
+<span class="fc" id="L125">            return ResponseEntity.notFound().build();</span>
+        }
+
+        // Don't delete a session that's actively recording
+<span class="pc bpc" id="L129" title="1 of 4 branches missed.">        if (recorder.isRecording() &amp;&amp; recorder.getCurrentSession().getId() == id) {</span>
+<span class="fc" id="L130">            return ResponseEntity.badRequest()</span>
+<span class="fc" id="L131">                    .body(Map.of(&quot;error&quot;, &quot;Cannot delete session while recording. Stop recording first.&quot;));</span>
+        }
+
+<span class="fc" id="L134">        tickStore.deleteBySessionId(id);</span>
+<span class="fc" id="L135">        sessionStore.delete(id);</span>
+<span class="fc" id="L136">        return ResponseEntity.noContent().build();</span>
+    }
+
+    /**
+     * Get all ticks from a recorded session.
+     */
+    @GetMapping(&quot;/{id}/ticks&quot;)
+    public ResponseEntity&lt;?&gt; getSessionTicks(@PathVariable long id) {
+<span class="fc" id="L144">        Optional&lt;Session&gt; session = sessionStore.findById(id);</span>
+<span class="fc bfc" id="L145" title="All 2 branches covered.">        if (session.isEmpty()) {</span>
+<span class="fc" id="L146">            return ResponseEntity.notFound().build();</span>
+        }
+<span class="fc" id="L148">        return ResponseEntity.ok(tickStore.findBySessionId(id));</span>
+    }
+
+    /**
+     * Export a session as JSON or CSV.
+     * Query param: format=json (default) or format=csv
+     */
+    @GetMapping(&quot;/{id}/export&quot;)
+    public ResponseEntity&lt;?&gt; exportSession(@PathVariable long id,
+                                           @RequestParam(defaultValue = &quot;json&quot;) String format) {
+<span class="fc" id="L158">        Optional&lt;Session&gt; sessionOpt = sessionStore.findById(id);</span>
+<span class="fc bfc" id="L159" title="All 2 branches covered.">        if (sessionOpt.isEmpty()) {</span>
+<span class="fc" id="L160">            return ResponseEntity.notFound().build();</span>
+        }
+
+<span class="fc" id="L163">        Session session = sessionOpt.get();</span>
+<span class="fc" id="L164">        List&lt;Tick&gt; ticks = tickStore.findBySessionId(id);</span>
+
+<span class="fc bfc" id="L166" title="All 2 branches covered.">        if (&quot;csv&quot;.equalsIgnoreCase(format)) {</span>
+<span class="fc" id="L167">            String csv = exporter.exportAsCsv(ticks);</span>
+<span class="fc" id="L168">            return ResponseEntity.ok()</span>
+<span class="fc" id="L169">                    .header(&quot;Content-Type&quot;, &quot;text/csv&quot;)</span>
+<span class="fc" id="L170">                    .header(&quot;Content-Disposition&quot;,</span>
+                            &quot;attachment; filename=\&quot;session-&quot; + id + &quot;.csv\&quot;&quot;)
+<span class="fc" id="L172">                    .body(csv);</span>
+        }
+
+        // Default: JSON export
+<span class="fc" id="L176">        return ResponseEntity.ok(exporter.exportAsJson(session, ticks));</span>
+    }
+
+    /**
+     * Replay a recorded session through the validator engine.
+     * Delegates to {@link SessionReplayer#replaySync} which owns speed validation.
+     *
+     * @param speed replay speed factor; must be in (0, 1000] — validated by SessionReplayer
+     */
+    @PostMapping(&quot;/{id}/replay&quot;)
+    public ResponseEntity&lt;?&gt; replaySession(@PathVariable long id,
+                                           @RequestParam(defaultValue = &quot;1.0&quot;) double speed) {
+<span class="fc bfc" id="L188" title="All 2 branches covered.">        if (sessionStore.findById(id).isEmpty()) {</span>
+<span class="fc" id="L189">            return ResponseEntity.notFound().build();</span>
+        }
+
+        List&lt;Tick&gt; ticks;
+        try {
+<span class="fc" id="L194">            ticks = replayer.replaySync(id, speed);</span>
+<span class="fc" id="L195">        } catch (IllegalArgumentException e) {</span>
+<span class="fc" id="L196">            return ResponseEntity.badRequest().body(Map.of(&quot;error&quot;, e.getMessage()));</span>
+<span class="fc" id="L197">        } catch (SessionReplayer.ReplayException e) {</span>
+<span class="fc" id="L198">            log.error(&quot;Replay of session {} failed at tick index {} (symbol={}): {}&quot;,</span>
+<span class="fc" id="L199">                    id, e.getTicksProcessed(), e.getFailingSymbol(), e.getMessage(), e);</span>
+<span class="fc" id="L200">            Map&lt;String, Object&gt; error = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L201">            error.put(&quot;error&quot;, e.getMessage());</span>
+<span class="fc" id="L202">            error.put(&quot;ticksProcessedBeforeFailure&quot;, e.getTicksProcessed());</span>
+<span class="fc" id="L203">            error.put(&quot;failingTickSymbol&quot;, e.getFailingSymbol());</span>
+<span class="fc" id="L204">            return ResponseEntity.status(500).body(error);</span>
+<span class="fc" id="L205">        }</span>
+
+<span class="fc" id="L207">        List&lt;ValidationResult&gt; results = engine.getResults();</span>
+<span class="fc" id="L208">        Map&lt;String, Object&gt; response = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L209">        response.put(&quot;sessionId&quot;, id);</span>
+<span class="fc" id="L210">        response.put(&quot;ticksReplayed&quot;, ticks.size());</span>
+<span class="fc" id="L211">        response.put(&quot;results&quot;, results);</span>
+
+<span class="fc" id="L213">        return ResponseEntity.ok(response);</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

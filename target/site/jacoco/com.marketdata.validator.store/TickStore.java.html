@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TickStore.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.store</a> &gt; <span class="el_source">TickStore.java</span></div><h1>TickStore.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.store;
+
+import com.marketdata.validator.model.Tick;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
+import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.util.List;
+
+/**
+ * JDBC data access for the `ticks` table.
+ * Uses JdbcTemplate — no JPA, no ORM overhead.
+ *
+ * Prices stored as TEXT (BigDecimal.toPlainString()) for precision.
+ * Timestamps stored as ISO-8601 TEXT (Instant.toString()).
+ *
+ * Key operations:
+ *   - save: single tick insert
+ *   - saveBatch: batch insert (100 ticks at a time for performance)
+ *   - findBySessionId: replay a recorded session
+ *   - findBySymbol: analysis queries
+ */
+@Repository
+public class TickStore {
+
+    private final JdbcTemplate jdbc;
+
+    private static final String INSERT_SQL =
+            &quot;INSERT INTO ticks (session_id, feed_id, symbol, price, bid, ask, volume, &quot; +
+            &quot;sequence_num, exchange_ts, received_ts) &quot; +
+            &quot;VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)&quot;;
+
+<span class="fc" id="L36">    private static final RowMapper&lt;Tick&gt; ROW_MAPPER = (rs, rowNum) -&gt; {</span>
+<span class="fc" id="L37">        Tick tick = new Tick();</span>
+<span class="fc" id="L38">        tick.setId(rs.getLong(&quot;id&quot;));</span>
+<span class="pc bpc" id="L39" title="1 of 2 branches missed.">        tick.setSessionId(rs.getObject(&quot;session_id&quot;) != null ? rs.getLong(&quot;session_id&quot;) : null);</span>
+<span class="fc" id="L40">        tick.setFeedId(rs.getString(&quot;feed_id&quot;));</span>
+<span class="fc" id="L41">        tick.setSymbol(rs.getString(&quot;symbol&quot;));</span>
+<span class="fc" id="L42">        tick.setPrice(new BigDecimal(rs.getString(&quot;price&quot;)));</span>
+<span class="fc bfc" id="L43" title="All 2 branches covered.">        tick.setBid(rs.getString(&quot;bid&quot;) != null ? new BigDecimal(rs.getString(&quot;bid&quot;)) : null);</span>
+<span class="fc bfc" id="L44" title="All 2 branches covered.">        tick.setAsk(rs.getString(&quot;ask&quot;) != null ? new BigDecimal(rs.getString(&quot;ask&quot;)) : null);</span>
+<span class="fc bfc" id="L45" title="All 2 branches covered.">        tick.setVolume(rs.getString(&quot;volume&quot;) != null ? new BigDecimal(rs.getString(&quot;volume&quot;)) : null);</span>
+<span class="fc" id="L46">        tick.setSequenceNum(rs.getLong(&quot;sequence_num&quot;));</span>
+<span class="fc" id="L47">        tick.setExchangeTimestamp(Instant.parse(rs.getString(&quot;exchange_ts&quot;)));</span>
+<span class="fc" id="L48">        tick.setReceivedTimestamp(Instant.parse(rs.getString(&quot;received_ts&quot;)));</span>
+<span class="fc" id="L49">        return tick;</span>
+    };
+
+<span class="fc" id="L52">    public TickStore(JdbcTemplate jdbc) {</span>
+<span class="fc" id="L53">        this.jdbc = jdbc;</span>
+<span class="fc" id="L54">    }</span>
+
+    /**
+     * Insert a single tick.
+     */
+    public void save(Tick tick) {
+<span class="fc" id="L60">        jdbc.update(INSERT_SQL,</span>
+<span class="fc" id="L61">                tick.getSessionId(),</span>
+<span class="fc" id="L62">                tick.getFeedId(),</span>
+<span class="fc" id="L63">                tick.getSymbol(),</span>
+<span class="fc" id="L64">                tick.getPrice().toPlainString(),</span>
+<span class="fc bfc" id="L65" title="All 2 branches covered.">                tick.getBid() != null ? tick.getBid().toPlainString() : null,</span>
+<span class="fc bfc" id="L66" title="All 2 branches covered.">                tick.getAsk() != null ? tick.getAsk().toPlainString() : null,</span>
+<span class="fc bfc" id="L67" title="All 2 branches covered.">                tick.getVolume() != null ? tick.getVolume().toPlainString() : null,</span>
+<span class="fc" id="L68">                tick.getSequenceNum(),</span>
+<span class="fc" id="L69">                tick.getExchangeTimestamp().toString(),</span>
+<span class="fc" id="L70">                tick.getReceivedTimestamp().toString());</span>
+<span class="fc" id="L71">    }</span>
+
+    /**
+     * Batch insert ticks — used by SessionRecorder to flush 100 ticks at a time.
+     * Much faster than individual inserts (1 round-trip vs 100).
+     * Transactional: all-or-nothing — prevents partial commit on failure.
+     */
+    @Transactional
+    public void saveBatch(List&lt;Tick&gt; ticks) {
+<span class="fc" id="L80">        jdbc.batchUpdate(INSERT_SQL, ticks, ticks.size(), (ps, tick) -&gt; {</span>
+<span class="fc" id="L81">            ps.setObject(1, tick.getSessionId());</span>
+<span class="fc" id="L82">            ps.setString(2, tick.getFeedId());</span>
+<span class="fc" id="L83">            ps.setString(3, tick.getSymbol());</span>
+<span class="fc" id="L84">            ps.setString(4, tick.getPrice().toPlainString());</span>
+<span class="pc bpc" id="L85" title="1 of 2 branches missed.">            ps.setString(5, tick.getBid() != null ? tick.getBid().toPlainString() : null);</span>
+<span class="pc bpc" id="L86" title="1 of 2 branches missed.">            ps.setString(6, tick.getAsk() != null ? tick.getAsk().toPlainString() : null);</span>
+<span class="pc bpc" id="L87" title="1 of 2 branches missed.">            ps.setString(7, tick.getVolume() != null ? tick.getVolume().toPlainString() : null);</span>
+<span class="fc" id="L88">            ps.setLong(8, tick.getSequenceNum());</span>
+<span class="fc" id="L89">            ps.setString(9, tick.getExchangeTimestamp().toString());</span>
+<span class="fc" id="L90">            ps.setString(10, tick.getReceivedTimestamp().toString());</span>
+<span class="fc" id="L91">        });</span>
+<span class="fc" id="L92">    }</span>
+
+    /**
+     * Get all ticks for a recorded session, ordered by exchange timestamp ascending.
+     * ORDER BY exchange_ts ASC is intentional and required for correct replay:
+     * SessionReplayer assumes ticks arrive in chronological order to preserve
+     * inter-tick timing and produce accurate validator state.
+     */
+    public List&lt;Tick&gt; findBySessionId(long sessionId) {
+<span class="fc" id="L101">        return jdbc.query(</span>
+                &quot;SELECT * FROM ticks WHERE session_id = ? ORDER BY exchange_ts ASC&quot;,
+<span class="fc" id="L103">                ROW_MAPPER, sessionId);</span>
+    }
+
+    /**
+     * Get ticks for a symbol within a time range.
+     */
+    public List&lt;Tick&gt; findBySymbol(String symbol, Instant from, Instant to) {
+<span class="fc" id="L110">        return jdbc.query(</span>
+                &quot;SELECT * FROM ticks WHERE symbol = ? AND exchange_ts &gt;= ? AND exchange_ts &lt;= ? ORDER BY exchange_ts&quot;,
+<span class="fc" id="L112">                ROW_MAPPER, symbol, from.toString(), to.toString());</span>
+    }
+
+    /**
+     * Get tick count for a session.
+     */
+    public long countBySessionId(long sessionId) {
+<span class="fc" id="L119">        Long count = jdbc.queryForObject(</span>
+                &quot;SELECT COUNT(*) FROM ticks WHERE session_id = ?&quot;,
+<span class="fc" id="L121">                Long.class, sessionId);</span>
+<span class="pc bpc" id="L122" title="1 of 2 branches missed.">        return count != null ? count : 0;</span>
+    }
+
+    /**
+     * Delete all ticks for a session (when deleting a session).
+     */
+    public void deleteBySessionId(long sessionId) {
+<span class="fc" id="L129">        jdbc.update(&quot;DELETE FROM ticks WHERE session_id = ?&quot;, sessionId);</span>
+<span class="fc" id="L130">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

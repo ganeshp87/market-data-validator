@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Logback configuration with two modes:
+    1. Default (dev): Human-readable colored console output
+    2. "prod" profile: Structured JSON — one JSON object per line,
+       searchable in ELK / Splunk / CloudWatch Logs
+
+    File is named logback-spring.xml (not logback.xml) so Spring Boot
+    can process <springProfile> tags for profile-based configuration.
+
+    Blueprint Section 16: "Every validation result logged as JSON —
+    searchable and filterable."
+-->
+<configuration>
+
+    <!-- ═══════════════════════════════════════════════════════════════
+         DEVELOPMENT (default profile) — colored, human-readable
+         ═══════════════════════════════════════════════════════════════ -->
+    <springProfile name="!prod">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>%d{HH:mm:ss.SSS} %highlight(%-5level) [%thread] %cyan(%logger{36}) - %msg%n</pattern>
+            </encoder>
+        </appender>
+
+        <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+            <file>stream-validator.log</file>
+            <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+                <fileNamePattern>stream-validator.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+                <maxFileSize>10MB</maxFileSize>
+                <maxHistory>7</maxHistory>
+                <totalSizeCap>50MB</totalSizeCap>
+            </rollingPolicy>
+            <encoder>
+                <pattern>%d{HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n</pattern>
+            </encoder>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="CONSOLE" />
+            <appender-ref ref="FILE" />
+        </root>
+
+        <!-- Reduce noise from framework internals during development -->
+        <logger name="org.springframework" level="WARN" />
+        <logger name="org.apache" level="WARN" />
+        <logger name="com.zaxxer.hikari" level="WARN" />
+    </springProfile>
+
+    <!-- ═══════════════════════════════════════════════════════════════
+         PRODUCTION (prod profile) — structured JSON, one object per line
+         ═══════════════════════════════════════════════════════════════
+
+         Each log line is a self-contained JSON object:
+         {
+           "timestamp": "2026-03-25T14:30:01.123Z",
+           "level": "INFO",
+           "logger": "c.m.s.validator.ValidatorEngine",
+           "thread": "main",
+           "message": "Validation result",
+           "validator": "ACCURACY",
+           "symbol": "BTCUSDT",
+           ...any MDC or structured argument fields
+         }
+
+         The LogstashEncoder from logstash-logback-encoder automatically
+         includes: @timestamp, level, logger_name, thread_name, message,
+         stack_trace (if present), plus any MDC fields and StructuredArguments.
+    -->
+    <springProfile name="prod">
+        <appender name="JSON_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+                <!-- Use shorter field names for readability -->
+                <fieldNames>
+                    <timestamp>timestamp</timestamp>
+                    <version>[ignore]</version>
+                    <levelValue>[ignore]</levelValue>
+                </fieldNames>
+                <!-- Add application name to every log line -->
+                <customFields>{"app":"stream-validator"}</customFields>
+            </encoder>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="JSON_CONSOLE" />
+        </root>
+
+        <logger name="org.springframework" level="WARN" />
+        <logger name="org.apache" level="WARN" />
+        <logger name="com.zaxxer.hikari" level="WARN" />
+    </springProfile>
+
+</configuration>

@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AlertGenerator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.validator</a> &gt; <span class="el_source">AlertGenerator.java</span></div><h1>AlertGenerator.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.validator;
+
+import com.marketdata.validator.model.Alert;
+import com.marketdata.validator.model.Alert.Severity;
+import com.marketdata.validator.model.ValidationResult;
+import com.marketdata.validator.store.AlertStore;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
+
+import jakarta.annotation.PostConstruct;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
+
+/**
+ * Watches validation results and generates alerts when a validator is in
+ * FAIL or WARN state and no unacknowledged alert exists for that area.
+ *
+ * Uses a time-based throttle to avoid querying the database on every tick.
+ * Re-checks every {@code CHECK_INTERVAL_MS} milliseconds so that if a user
+ * deletes or acknowledges an alert while the failure persists, a new alert
+ * is generated automatically.
+ */
+@Component
+public class AlertGenerator {
+
+<span class="fc" id="L31">    private static final Logger log = LoggerFactory.getLogger(AlertGenerator.class);</span>
+    private static final long CHECK_INTERVAL_MS = 10_000; // re-check every 10 seconds
+
+    private final ValidatorEngine engine;
+    private final AlertStore alertStore;
+
+<span class="fc" id="L37">    private final AtomicLong lastCheckTime = new AtomicLong(0);</span>
+    // Areas that already have an unacknowledged alert — refreshed periodically
+<span class="fc" id="L39">    private volatile Set&lt;String&gt; coveredAreas = ConcurrentHashMap.newKeySet();</span>
+<span class="fc" id="L40">    private volatile boolean initialized = false;</span>
+
+<span class="fc" id="L42">    public AlertGenerator(ValidatorEngine engine, AlertStore alertStore) {</span>
+<span class="fc" id="L43">        this.engine = engine;</span>
+<span class="fc" id="L44">        this.alertStore = alertStore;</span>
+<span class="fc" id="L45">    }</span>
+
+    /** Package-private for testing — returns the raw lastCheckTime value. */
+    long getLastCheckTime() {
+<span class="fc" id="L49">        return lastCheckTime.get();</span>
+    }
+
+    @PostConstruct
+    void init() {
+        // Clear any stale alerts from previous server runs so fresh alerts are generated
+        try {
+<span class="fc" id="L56">            alertStore.deleteAll();</span>
+<span class="fc" id="L57">            log.info(&quot;Cleared stale alerts from previous run&quot;);</span>
+<span class="fc" id="L58">        } catch (Exception e) {</span>
+<span class="fc" id="L59">            log.warn(&quot;Failed to clear stale alerts: {}&quot;, e.getMessage());</span>
+<span class="fc" id="L60">        }</span>
+<span class="fc" id="L61">        engine.addListener(this::onValidationResults);</span>
+<span class="fc" id="L62">        engine.addPerFeedListener((feedId, results) -&gt; onValidationResults(results));</span>
+<span class="fc" id="L63">        log.info(&quot;AlertGenerator registered as ValidatorEngine listener (global + per-feed)&quot;);</span>
+<span class="fc" id="L64">    }</span>
+
+    void onValidationResults(List&lt;ValidationResult&gt; results) {
+<span class="fc" id="L67">        long now = System.currentTimeMillis();</span>
+<span class="fc" id="L68">        long lastCheck = lastCheckTime.get();</span>
+
+        // Refresh the set of areas that already have unacknowledged alerts.
+        // The timer is advanced only after a successful query — if the query throws,
+        // lastCheckTime is reset to lastCheck so the next call retries immediately.
+<span class="pc bpc" id="L73" title="1 of 4 branches missed.">        if (now - lastCheck &gt;= CHECK_INTERVAL_MS &amp;&amp; lastCheckTime.compareAndSet(lastCheck, now)) {</span>
+            try {
+<span class="fc" id="L75">                coveredAreas = alertStore.findUnacknowledged().stream()</span>
+<span class="fc" id="L76">                        .map(Alert::getArea)</span>
+<span class="fc" id="L77">                        .collect(Collectors.toSet());</span>
+<span class="fc" id="L78">            } catch (Exception e) {</span>
+<span class="fc" id="L79">                lastCheckTime.set(lastCheck); // reset timer — retry on next call</span>
+<span class="fc" id="L80">                log.warn(&quot;Failed to refresh covered alert areas: {}&quot;, e.getMessage());</span>
+<span class="fc" id="L81">            }</span>
+        }
+
+<span class="fc bfc" id="L84" title="All 2 branches covered.">        for (ValidationResult result : results) {</span>
+<span class="fc bfc" id="L85" title="All 2 branches covered.">            if (result.getStatus() == ValidationResult.Status.PASS) {</span>
+<span class="fc" id="L86">                continue;</span>
+            }
+
+<span class="fc" id="L89">            String areaName = result.getArea().name();</span>
+
+            // Skip if an unacknowledged alert already exists for this area
+<span class="fc bfc" id="L92" title="All 2 branches covered.">            if (coveredAreas.contains(areaName)) {</span>
+<span class="fc" id="L93">                continue;</span>
+            }
+
+<span class="fc bfc" id="L96" title="All 2 branches covered.">            Severity severity = result.getStatus() == ValidationResult.Status.FAIL</span>
+<span class="fc" id="L97">                    ? Severity.CRITICAL : Severity.WARN;</span>
+
+<span class="fc" id="L99">            String message = String.format(&quot;%s validation %s — value: %.2f, threshold: %.2f&quot;,</span>
+<span class="fc" id="L100">                    areaName, result.getStatus(), result.getMetric(), result.getThreshold());</span>
+
+<span class="fc" id="L102">            Alert alert = new Alert(areaName, severity, message);</span>
+<span class="fc" id="L103">            alertStore.save(alert);</span>
+<span class="fc" id="L104">            coveredAreas.add(areaName); // mark as covered immediately</span>
+<span class="fc" id="L105">            log.info(&quot;Alert generated: [{}] {} — {}&quot;, severity, areaName, message);</span>
+<span class="fc" id="L106">        }</span>
+<span class="fc" id="L107">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

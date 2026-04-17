@@ -1,0 +1,264 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SessionRecorder.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.session</a> &gt; <span class="el_source">SessionRecorder.java</span></div><h1>SessionRecorder.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.session;
+
+import com.marketdata.validator.feed.FeedManager;
+import com.marketdata.validator.model.Session;
+import com.marketdata.validator.model.Tick;
+import com.marketdata.validator.store.SessionStore;
+import com.marketdata.validator.store.TickStore;
+import jakarta.annotation.PreDestroy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
+
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.locks.ReentrantLock;
+
+/**
+ * Records live ticks to SQLite during a recording session.
+ *
+ * Blueprint Section 5.4:
+ *   - Start recording: create session in DB, start saving every tick
+ *   - Stop recording: finalize session, compute summary stats
+ *   - Tick buffer: batch-insert every 100 ticks or every 1 second
+ *     (whichever comes first) to avoid a DB write per tick
+ *
+ * Usage:
+ *   Register as a FeedManager global tick listener.
+ *   Call start() to begin recording, stop() to finalize.
+ *   onTick() is called by FeedManager for every incoming tick.
+ */
+@Component
+public class SessionRecorder {
+
+<span class="fc" id="L35">    private static final Logger log = LoggerFactory.getLogger(SessionRecorder.class);</span>
+    static final int BATCH_SIZE = 100;
+    static final long FLUSH_INTERVAL_MS = 1_000;
+
+    private final SessionStore sessionStore;
+    private final TickStore tickStore;
+
+<span class="fc" id="L42">    private final ReentrantLock lock = new ReentrantLock();</span>
+<span class="fc" id="L43">    private final List&lt;Tick&gt; buffer = new ArrayList&lt;&gt;();</span>
+
+    private volatile boolean recording;
+    private volatile boolean flushFailed;
+    private Session currentSession;
+    private long tickCount;
+    private long byteSize;
+    private long lastFlushTime;
+
+<span class="fc" id="L52">    public SessionRecorder(SessionStore sessionStore, TickStore tickStore, FeedManager feedManager) {</span>
+<span class="fc" id="L53">        this.sessionStore = sessionStore;</span>
+<span class="fc" id="L54">        this.tickStore = tickStore;</span>
+<span class="fc" id="L55">        feedManager.addGlobalTickListener(this::onTick);</span>
+<span class="fc" id="L56">    }</span>
+
+    /**
+     * Start a new recording session.
+     *
+     * @param name   human-readable session name (e.g., &quot;btc-morning-session&quot;)
+     * @param feedId which feed connection to record from
+     * @return the created Session with its auto-generated ID
+     * @throws IllegalStateException if already recording
+     */
+    public Session start(String name, String feedId) {
+<span class="fc" id="L67">        lock.lock();</span>
+        try {
+<span class="fc bfc" id="L69" title="All 2 branches covered.">            if (recording) {</span>
+<span class="fc" id="L70">                throw new IllegalStateException(&quot;Already recording session: &quot; + currentSession.getId());</span>
+            }
+
+<span class="fc" id="L73">            Session session = new Session();</span>
+<span class="fc" id="L74">            session.setName(name);</span>
+<span class="fc" id="L75">            session.setFeedId(feedId);</span>
+<span class="fc" id="L76">            session.setStatus(Session.Status.RECORDING);</span>
+<span class="fc" id="L77">            session.setStartedAt(Instant.now());</span>
+
+<span class="fc" id="L79">            currentSession = sessionStore.create(session);</span>
+<span class="fc" id="L80">            tickCount = 0;</span>
+<span class="fc" id="L81">            byteSize = 0;</span>
+<span class="fc" id="L82">            flushFailed = false;</span>
+<span class="fc" id="L83">            buffer.clear();</span>
+<span class="fc" id="L84">            lastFlushTime = System.currentTimeMillis();</span>
+<span class="fc" id="L85">            recording = true;</span>
+
+<span class="fc" id="L87">            log.info(&quot;Started recording session id={} name='{}' feed={}&quot;,</span>
+<span class="fc" id="L88">                    currentSession.getId(), name, feedId);</span>
+<span class="fc" id="L89">            return currentSession;</span>
+        } finally {
+<span class="fc" id="L91">            lock.unlock();</span>
+        }
+    }
+
+    /**
+     * Called for every incoming tick (registered as FeedManager global listener).
+     * Buffers ticks and flushes when batch is full or time interval exceeded.
+     */
+    public void onTick(Tick tick) {
+<span class="fc bfc" id="L100" title="All 2 branches covered.">        if (!recording) {</span>
+<span class="fc" id="L101">            return;</span>
+        }
+
+<span class="fc" id="L104">        lock.lock();</span>
+        try {
+<span class="pc bpc" id="L106" title="1 of 2 branches missed.">            if (!recording) {</span>
+<span class="nc" id="L107">                return; // Double-check after acquiring lock</span>
+            }
+
+<span class="fc" id="L110">            tick.setSessionId(currentSession.getId());</span>
+<span class="fc" id="L111">            buffer.add(tick);</span>
+<span class="fc" id="L112">            tickCount++;</span>
+<span class="fc" id="L113">            byteSize += estimateTickSize(tick);</span>
+
+<span class="pc bpc" id="L115" title="1 of 4 branches missed.">            if (buffer.size() &gt;= BATCH_SIZE || isFlushDue()) {</span>
+<span class="fc" id="L116">                flush();</span>
+            }
+        } finally {
+<span class="fc" id="L119">            lock.unlock();</span>
+        }
+<span class="fc" id="L121">    }</span>
+
+    /**
+     * Stop the current recording session. Flushes remaining buffer
+     * and finalizes the session in the database.
+     *
+     * @return the finalized Session
+     * @throws IllegalStateException if not currently recording
+     */
+    public Session stop() {
+<span class="fc" id="L131">        lock.lock();</span>
+        try {
+<span class="fc bfc" id="L133" title="All 2 branches covered.">            if (!recording) {</span>
+<span class="fc" id="L134">                throw new IllegalStateException(&quot;Not currently recording&quot;);</span>
+            }
+
+            // Final flush of remaining ticks
+<span class="fc" id="L138">            flush();</span>
+
+            // Finalize session in DB
+<span class="fc" id="L141">            sessionStore.complete(currentSession.getId(), tickCount, byteSize);</span>
+
+            // If any flush failed during recording, override status to FAILED so the
+            // caller knows the session data is incomplete (ticks were silently discarded).
+<span class="fc bfc" id="L145" title="All 2 branches covered.">            if (flushFailed) {</span>
+<span class="fc" id="L146">                sessionStore.updateStatus(currentSession.getId(), Session.Status.FAILED);</span>
+<span class="fc" id="L147">                currentSession.setStatus(Session.Status.FAILED);</span>
+            } else {
+<span class="fc" id="L149">                currentSession.setStatus(Session.Status.COMPLETED);</span>
+            }
+<span class="fc" id="L151">            currentSession.setEndedAt(Instant.now());</span>
+<span class="fc" id="L152">            currentSession.setTickCount(tickCount);</span>
+<span class="fc" id="L153">            currentSession.setByteSize(byteSize);</span>
+
+<span class="fc" id="L155">            Session completed = currentSession;</span>
+<span class="fc" id="L156">            recording = false;</span>
+<span class="fc" id="L157">            currentSession = null;</span>
+
+<span class="fc" id="L159">            log.info(&quot;Stopped recording session id={} ticks={} bytes={}&quot;,</span>
+<span class="fc" id="L160">                    completed.getId(), tickCount, byteSize);</span>
+<span class="fc" id="L161">            return completed;</span>
+        } finally {
+<span class="fc" id="L163">            lock.unlock();</span>
+        }
+    }
+
+    /**
+     * Whether a recording session is currently active.
+     */
+    public boolean isRecording() {
+<span class="fc" id="L171">        return recording;</span>
+    }
+
+    /**
+     * The current session being recorded (null if not recording).
+     */
+    public Session getCurrentSession() {
+<span class="fc" id="L178">        return currentSession;</span>
+    }
+
+    /**
+     * Number of ticks recorded in the current session.
+     */
+    public long getTickCount() {
+<span class="fc" id="L185">        return tickCount;</span>
+    }
+
+    /**
+     * Number of ticks currently buffered (not yet flushed to DB).
+     */
+    public int getBufferSize() {
+<span class="fc" id="L192">        lock.lock();</span>
+        try {
+<span class="fc" id="L194">            return buffer.size();</span>
+        } finally {
+<span class="fc" id="L196">            lock.unlock();</span>
+        }
+    }
+
+    @PreDestroy
+    void destroy() {
+<span class="fc bfc" id="L202" title="All 2 branches covered.">        if (recording) {</span>
+<span class="fc" id="L203">            log.info(&quot;SessionRecorder shutting down — flushing {} buffered ticks&quot;, buffer.size());</span>
+<span class="fc" id="L204">            lock.lock();</span>
+            try {
+<span class="fc" id="L206">                flush();</span>
+<span class="nc" id="L207">            } catch (Exception e) {</span>
+<span class="nc" id="L208">                log.error(&quot;Failed to flush ticks on shutdown: {}&quot;, e.getMessage());</span>
+            } finally {
+<span class="fc" id="L210">                lock.unlock();</span>
+            }
+        }
+<span class="fc" id="L213">    }</span>
+
+    /**
+     * Force flush any buffered ticks to the database.
+     * Useful for testing or manual control.
+     */
+    public void flushNow() {
+<span class="fc" id="L220">        lock.lock();</span>
+        try {
+<span class="fc" id="L222">            flush();</span>
+        } finally {
+<span class="fc" id="L224">            lock.unlock();</span>
+        }
+<span class="fc" id="L226">    }</span>
+
+    // --- Internal ---
+
+    private void flush() {
+<span class="fc bfc" id="L231" title="All 2 branches covered.">        if (buffer.isEmpty()) {</span>
+<span class="fc" id="L232">            return;</span>
+        }
+        try {
+<span class="fc" id="L235">            tickStore.saveBatch(new ArrayList&lt;&gt;(buffer));</span>
+<span class="fc" id="L236">            buffer.clear();</span>
+<span class="fc" id="L237">        } catch (Exception e) {</span>
+<span class="fc" id="L238">            log.error(&quot;Failed to flush {} ticks to DB — discarding to avoid retry storm: {}&quot;,</span>
+<span class="fc" id="L239">                    buffer.size(), e.getMessage());</span>
+<span class="fc" id="L240">            flushFailed = true;</span>
+<span class="fc" id="L241">            buffer.clear();</span>
+<span class="fc" id="L242">        }</span>
+<span class="fc" id="L243">        lastFlushTime = System.currentTimeMillis();</span>
+<span class="fc" id="L244">    }</span>
+
+    private boolean isFlushDue() {
+<span class="pc bpc" id="L247" title="1 of 2 branches missed.">        return System.currentTimeMillis() - lastFlushTime &gt;= FLUSH_INTERVAL_MS;</span>
+    }
+
+    /**
+     * Rough estimate of a tick's byte size for session stats.
+     * Counts string lengths of key fields — not exact, but consistent.
+     */
+    private long estimateTickSize(Tick tick) {
+<span class="fc" id="L255">        long size = 8; // overhead</span>
+<span class="pc bpc" id="L256" title="1 of 2 branches missed.">        size += tick.getSymbol() != null ? tick.getSymbol().length() : 0;</span>
+<span class="pc bpc" id="L257" title="1 of 2 branches missed.">        size += tick.getPrice() != null ? tick.getPrice().toPlainString().length() : 0;</span>
+<span class="pc bpc" id="L258" title="1 of 2 branches missed.">        size += tick.getFeedId() != null ? tick.getFeedId().length() : 0;</span>
+<span class="fc" id="L259">        size += 8 + 8; // timestamps (2 longs)</span>
+<span class="fc" id="L260">        size += 8; // sequenceNum</span>
+<span class="fc" id="L261">        return size;</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

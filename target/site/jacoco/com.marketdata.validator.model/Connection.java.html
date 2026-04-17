@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Connection.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.model</a> &gt; <span class="el_source">Connection.java</span></div><h1>Connection.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.model;
+
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+
+/**
+ * Configuration and runtime state for a single WebSocket feed connection.
+ * Represents a connection to an exchange like Binance or Finnhub.
+ */
+public class Connection {
+
+<span class="fc" id="L14">    public enum AdapterType {</span>
+<span class="fc" id="L15">        BINANCE, FINNHUB, GENERIC, LVWR_T</span>
+    }
+
+<span class="fc" id="L18">    public enum Status {</span>
+<span class="fc" id="L19">        CONNECTED, DISCONNECTED, RECONNECTING, ERROR</span>
+    }
+
+    private String id;
+    private String name;
+    private String url;
+    private AdapterType adapterType;
+    private List&lt;String&gt; symbols;
+    private Status status;
+    private Instant connectedAt;
+    private Instant lastTickAt;
+    private long tickCount;
+
+<span class="fc" id="L32">    public Connection() {</span>
+<span class="fc" id="L33">        this.id = UUID.randomUUID().toString();</span>
+<span class="fc" id="L34">        this.symbols = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L35">        this.status = Status.DISCONNECTED;</span>
+<span class="fc" id="L36">    }</span>
+
+    public Connection(String name, String url, AdapterType adapterType, List&lt;String&gt; symbols) {
+<span class="fc" id="L39">        this();</span>
+<span class="fc" id="L40">        this.name = name;</span>
+<span class="fc" id="L41">        this.url = url;</span>
+<span class="fc" id="L42">        this.adapterType = adapterType;</span>
+<span class="fc" id="L43">        this.symbols = new ArrayList&lt;&gt;(symbols);</span>
+<span class="fc" id="L44">    }</span>
+
+    /**
+     * Record that a tick was received — updates lastTickAt and increments count.
+     */
+    public void recordTick() {
+<span class="fc" id="L50">        this.lastTickAt = Instant.now();</span>
+<span class="fc" id="L51">        this.tickCount++;</span>
+<span class="fc" id="L52">    }</span>
+
+    // --- Getters and Setters ---
+
+    public String getId() {
+<span class="fc" id="L57">        return id;</span>
+    }
+
+    public void setId(String id) {
+<span class="fc" id="L61">        this.id = id;</span>
+<span class="fc" id="L62">    }</span>
+
+    public String getName() {
+<span class="fc" id="L65">        return name;</span>
+    }
+
+    public void setName(String name) {
+<span class="fc" id="L69">        this.name = name;</span>
+<span class="fc" id="L70">    }</span>
+
+    public String getUrl() {
+<span class="fc" id="L73">        return url;</span>
+    }
+
+    public void setUrl(String url) {
+<span class="fc" id="L77">        this.url = url;</span>
+<span class="fc" id="L78">    }</span>
+
+    public AdapterType getAdapterType() {
+<span class="fc" id="L81">        return adapterType;</span>
+    }
+
+    public void setAdapterType(AdapterType adapterType) {
+<span class="fc" id="L85">        this.adapterType = adapterType;</span>
+<span class="fc" id="L86">    }</span>
+
+    public List&lt;String&gt; getSymbols() {
+<span class="fc" id="L89">        return symbols;</span>
+    }
+
+    public void setSymbols(List&lt;String&gt; symbols) {
+<span class="fc" id="L93">        this.symbols = new ArrayList&lt;&gt;(symbols);</span>
+<span class="fc" id="L94">    }</span>
+
+    public Status getStatus() {
+<span class="fc" id="L97">        return status;</span>
+    }
+
+    public void setStatus(Status status) {
+<span class="fc" id="L101">        this.status = status;</span>
+<span class="fc" id="L102">    }</span>
+
+    public Instant getConnectedAt() {
+<span class="fc" id="L105">        return connectedAt;</span>
+    }
+
+    public void setConnectedAt(Instant connectedAt) {
+<span class="fc" id="L109">        this.connectedAt = connectedAt;</span>
+<span class="fc" id="L110">    }</span>
+
+    public Instant getLastTickAt() {
+<span class="fc" id="L113">        return lastTickAt;</span>
+    }
+
+    public void setLastTickAt(Instant lastTickAt) {
+<span class="fc" id="L117">        this.lastTickAt = lastTickAt;</span>
+<span class="fc" id="L118">    }</span>
+
+    public long getTickCount() {
+<span class="fc" id="L121">        return tickCount;</span>
+    }
+
+    public void setTickCount(long tickCount) {
+<span class="fc" id="L125">        this.tickCount = tickCount;</span>
+<span class="fc" id="L126">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

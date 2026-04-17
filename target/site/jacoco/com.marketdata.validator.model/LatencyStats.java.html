@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>LatencyStats.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.model</a> &gt; <span class="el_source">LatencyStats.java</span></div><h1>LatencyStats.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.model;
+
+import java.time.Instant;
+
+/**
+ * A point-in-time snapshot of latency percentiles.
+ * Produced by LatencyValidator, consumed by SSE stream and UI's LatencyChart.
+ * Immutable once created — represents a frozen measurement window.
+ */
+public class LatencyStats {
+
+    private long p50Ms;
+    private long p95Ms;
+    private long p99Ms;
+    private long maxMs;
+    private long minMs;
+    private double avgMs;
+    private long count;
+    private Instant windowStart;
+    private Instant windowEnd;
+
+<span class="fc" id="L22">    public LatencyStats() {</span>
+<span class="fc" id="L23">    }</span>
+
+    public LatencyStats(long p50Ms, long p95Ms, long p99Ms,
+                        long maxMs, long minMs, double avgMs, long count,
+<span class="fc" id="L27">                        Instant windowStart, Instant windowEnd) {</span>
+<span class="fc" id="L28">        this.p50Ms = p50Ms;</span>
+<span class="fc" id="L29">        this.p95Ms = p95Ms;</span>
+<span class="fc" id="L30">        this.p99Ms = p99Ms;</span>
+<span class="fc" id="L31">        this.maxMs = maxMs;</span>
+<span class="fc" id="L32">        this.minMs = minMs;</span>
+<span class="fc" id="L33">        this.avgMs = avgMs;</span>
+<span class="fc" id="L34">        this.count = count;</span>
+<span class="fc" id="L35">        this.windowStart = windowStart;</span>
+<span class="fc" id="L36">        this.windowEnd = windowEnd;</span>
+<span class="fc" id="L37">    }</span>
+
+    // --- Getters and Setters ---
+
+    public long getP50Ms() {
+<span class="fc" id="L42">        return p50Ms;</span>
+    }
+
+    public void setP50Ms(long p50Ms) {
+<span class="fc" id="L46">        this.p50Ms = p50Ms;</span>
+<span class="fc" id="L47">    }</span>
+
+    public long getP95Ms() {
+<span class="fc" id="L50">        return p95Ms;</span>
+    }
+
+    public void setP95Ms(long p95Ms) {
+<span class="fc" id="L54">        this.p95Ms = p95Ms;</span>
+<span class="fc" id="L55">    }</span>
+
+    public long getP99Ms() {
+<span class="fc" id="L58">        return p99Ms;</span>
+    }
+
+    public void setP99Ms(long p99Ms) {
+<span class="fc" id="L62">        this.p99Ms = p99Ms;</span>
+<span class="fc" id="L63">    }</span>
+
+    public long getMaxMs() {
+<span class="fc" id="L66">        return maxMs;</span>
+    }
+
+    public void setMaxMs(long maxMs) {
+<span class="fc" id="L70">        this.maxMs = maxMs;</span>
+<span class="fc" id="L71">    }</span>
+
+    public long getMinMs() {
+<span class="fc" id="L74">        return minMs;</span>
+    }
+
+    public void setMinMs(long minMs) {
+<span class="fc" id="L78">        this.minMs = minMs;</span>
+<span class="fc" id="L79">    }</span>
+
+    public double getAvgMs() {
+<span class="fc" id="L82">        return avgMs;</span>
+    }
+
+    public void setAvgMs(double avgMs) {
+<span class="fc" id="L86">        this.avgMs = avgMs;</span>
+<span class="fc" id="L87">    }</span>
+
+    public long getCount() {
+<span class="fc" id="L90">        return count;</span>
+    }
+
+    public void setCount(long count) {
+<span class="fc" id="L94">        this.count = count;</span>
+<span class="fc" id="L95">    }</span>
+
+    public Instant getWindowStart() {
+<span class="fc" id="L98">        return windowStart;</span>
+    }
+
+    public void setWindowStart(Instant windowStart) {
+<span class="fc" id="L102">        this.windowStart = windowStart;</span>
+<span class="fc" id="L103">    }</span>
+
+    public Instant getWindowEnd() {
+<span class="fc" id="L106">        return windowEnd;</span>
+    }
+
+    public void setWindowEnd(Instant windowEnd) {
+<span class="fc" id="L110">        this.windowEnd = windowEnd;</span>
+<span class="fc" id="L111">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

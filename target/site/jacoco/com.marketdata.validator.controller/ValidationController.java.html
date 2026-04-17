@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ValidationController.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.controller</a> &gt; <span class="el_source">ValidationController.java</span></div><h1>ValidationController.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.controller;
+
+import com.marketdata.validator.feed.FeedManager;
+import com.marketdata.validator.model.ValidationResult;
+import com.marketdata.validator.validator.ValidatorEngine;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * REST controller for validation configuration and results.
+ *
+ * Endpoints:
+ *   GET  /api/validation/summary  — current validation state (all validators)
+ *   GET  /api/validation/history  — validation snapshots over time
+ *   PUT  /api/validation/config   — update thresholds
+ *   POST /api/validation/reset    — reset all validator state
+ */
+@RestController
+@RequestMapping(&quot;/api/validation&quot;)
+public class ValidationController {
+
+    private final ValidatorEngine engine;
+    private final FeedManager feedManager;
+
+<span class="fc" id="L29">    public ValidationController(ValidatorEngine engine, FeedManager feedManager) {</span>
+<span class="fc" id="L30">        this.engine = engine;</span>
+<span class="fc" id="L31">        this.feedManager = feedManager;</span>
+<span class="fc" id="L32">    }</span>
+
+    /**
+     * Current validation state — all validators' latest results plus overall status.
+     * Optional query param ?feedId= scopes results to a single feed (Fix 8).
+     */
+    @GetMapping(&quot;/summary&quot;)
+    public Map&lt;String, Object&gt; getSummary(
+            @RequestParam(required = false) String feedId) {
+
+        Map&lt;String, ValidationResult&gt; resultsByArea;
+        long ticks;
+
+<span class="pc bpc" id="L45" title="3 of 4 branches missed.">        if (feedId != null &amp;&amp; !feedId.isBlank()) {</span>
+<span class="nc" id="L46">            resultsByArea = engine.getResultsByArea(feedId);</span>
+<span class="nc" id="L47">            ticks = engine.getTickCount(feedId);</span>
+<span class="nc bnc" id="L48" title="All 2 branches missed.">            if (resultsByArea == null) {</span>
+<span class="nc" id="L49">                resultsByArea = Map.of();</span>
+            }
+        } else {
+<span class="fc" id="L52">            resultsByArea = engine.getResultsByArea();</span>
+<span class="fc" id="L53">            ticks = engine.getTickCount();</span>
+        }
+
+<span class="fc" id="L56">        ValidationResult.Status overallStatus = computeOverallStatus(resultsByArea);</span>
+
+<span class="fc" id="L58">        return Map.of(</span>
+                &quot;results&quot;, resultsByArea,
+                &quot;overallStatus&quot;, overallStatus,
+<span class="fc" id="L61">                &quot;timestamp&quot;, Instant.now(),</span>
+<span class="fc" id="L62">                &quot;ticksProcessed&quot;, ticks,</span>
+<span class="fc" id="L63">                &quot;rejectedCount&quot;, engine.getRejectedCount(),</span>
+<span class="fc" id="L64">                &quot;duplicateCount&quot;, engine.getDuplicateCount()</span>
+        );
+    }
+
+    /**
+     * Validation history — list of all current results as an ordered list.
+     * Each call returns the current snapshot.
+     */
+    @GetMapping(&quot;/history&quot;)
+    public List&lt;ValidationResult&gt; getHistory() {
+<span class="fc" id="L74">        return engine.getResults();</span>
+    }
+
+    /**
+     * Update validation thresholds.
+     * Body can target a specific area or apply globally:
+     *   { &quot;area&quot;: &quot;LATENCY&quot;, &quot;config&quot;: { &quot;warnThresholdMs&quot;: 200 } }
+     * or:
+     *   { &quot;config&quot;: { &quot;warnThresholdMs&quot;: 200 } }
+     */
+    @PutMapping(&quot;/config&quot;)
+    public ResponseEntity&lt;?&gt; updateConfig(@RequestBody Map&lt;String, Object&gt; body) {
+        @SuppressWarnings(&quot;unchecked&quot;)
+<span class="fc" id="L87">        Map&lt;String, Object&gt; config = (Map&lt;String, Object&gt;) body.get(&quot;config&quot;);</span>
+<span class="fc bfc" id="L88" title="All 4 branches covered.">        if (config == null || config.isEmpty()) {</span>
+<span class="fc" id="L89">            return ResponseEntity.badRequest()</span>
+<span class="fc" id="L90">                    .body(Map.of(&quot;error&quot;, &quot;'config' map is required&quot;));</span>
+        }
+
+<span class="fc" id="L93">        String area = (String) body.get(&quot;area&quot;);</span>
+<span class="fc bfc" id="L94" title="All 2 branches covered.">        if (area != null) {</span>
+<span class="fc" id="L95">            engine.configure(area, config);</span>
+        } else {
+<span class="fc" id="L97">            engine.configure(config);</span>
+        }
+
+<span class="fc" id="L100">        return ResponseEntity.ok(Map.of(</span>
+                &quot;message&quot;, &quot;Configuration updated&quot;,
+<span class="fc bfc" id="L102" title="All 2 branches covered.">                &quot;area&quot;, area != null ? area : &quot;ALL&quot;</span>
+        ));
+    }
+
+    /**
+     * Reset all validator state — clears counters, buffers, results.
+     */
+    @PostMapping(&quot;/reset&quot;)
+    public Map&lt;String, Object&gt; resetAll() {
+<span class="fc" id="L111">        engine.reset();</span>
+<span class="fc" id="L112">        return Map.of(</span>
+                &quot;message&quot;, &quot;All validators reset&quot;,
+<span class="fc" id="L114">                &quot;timestamp&quot;, Instant.now()</span>
+        );
+    }
+
+    /**
+     * GET /api/validation/feeds — list configured feeds with id and name (Fix 8).
+     * Used by the frontend scope selector dropdown.
+     */
+    @GetMapping(&quot;/feeds&quot;)
+    public List&lt;Map&lt;String, String&gt;&gt; getFeeds() {
+<span class="nc" id="L124">        return feedManager.getAllConnections().stream()</span>
+<span class="nc" id="L125">                .map(c -&gt; Map.of(&quot;id&quot;, c.getId(), &quot;name&quot;, c.getName()))</span>
+<span class="nc" id="L126">                .toList();</span>
+    }
+
+    /**
+     * Computes the worst status across all validators.
+     * FAIL &gt; WARN &gt; PASS — if any validator is FAIL, overall is FAIL.
+     */
+    private ValidationResult.Status computeOverallStatus(
+            Map&lt;String, ValidationResult&gt; results) {
+<span class="fc" id="L135">        boolean hasFail = false;</span>
+<span class="fc" id="L136">        boolean hasWarn = false;</span>
+
+<span class="fc bfc" id="L138" title="All 2 branches covered.">        for (ValidationResult result : results.values()) {</span>
+<span class="fc bfc" id="L139" title="All 2 branches covered.">            if (result.getStatus() == ValidationResult.Status.FAIL) {</span>
+<span class="fc" id="L140">                hasFail = true;</span>
+<span class="fc bfc" id="L141" title="All 2 branches covered.">            } else if (result.getStatus() == ValidationResult.Status.WARN) {</span>
+<span class="fc" id="L142">                hasWarn = true;</span>
+            }
+<span class="fc" id="L144">        }</span>
+
+<span class="fc bfc" id="L146" title="All 2 branches covered.">        if (hasFail) return ValidationResult.Status.FAIL;</span>
+<span class="fc bfc" id="L147" title="All 2 branches covered.">        if (hasWarn) return ValidationResult.Status.WARN;</span>
+<span class="fc" id="L148">        return ValidationResult.Status.PASS;</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

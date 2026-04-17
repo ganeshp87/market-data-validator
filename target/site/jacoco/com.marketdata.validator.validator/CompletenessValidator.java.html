@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>CompletenessValidator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.validator</a> &gt; <span class="el_source">CompletenessValidator.java</span></div><h1>CompletenessValidator.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.validator;
+
+import com.marketdata.validator.model.Tick;
+import com.marketdata.validator.model.ValidationResult;
+import com.marketdata.validator.model.ValidationResult.Area;
+import com.marketdata.validator.model.ValidationResult.Status;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.stereotype.Component;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+
+/**
+ * Detects missed/dropped messages by tracking sequence gaps and stale symbols.
+ *
+ * Blueprint Section 9.3:
+ *   1. Track last sequence number per symbol
+ *   2. If current.seqNum != last.seqNum + 1 → gap detected
+ *   3. If time since last tick &gt; heartbeatThreshold (10s) → stale
+ *
+ * Result thresholds:
+ *   PASS: completenessRate &gt;= 99.99% AND staleSymbols.isEmpty()
+ *   WARN: completenessRate &gt;= 99.0%
+ *   FAIL: completenessRate &lt; 99.0% OR staleSymbols.size() &gt; 0
+ */
+@Component
+<span class="fc" id="L33">public class CompletenessValidator implements Validator {</span>
+
+<span class="fc" id="L35">    private static final Logger log = LoggerFactory.getLogger(CompletenessValidator.class);</span>
+    private static final long DEFAULT_HEARTBEAT_THRESHOLD_MS = 10_000; // 10 seconds
+    private static final double DEFAULT_PASS_THRESHOLD = 99.99;
+    private static final double DEFAULT_WARN_THRESHOLD = 99.0;
+    // Hysteresis: a symbol must receive consistent ticks for this long before being
+    // removed from staleSymbols. Prevents FAIL→PASS→FAIL oscillation on unstable feeds.
+    private static final long DEFAULT_STALE_RECOVERY_WINDOW_MS = 30_000L; // 30 seconds
+
+<span class="fc" id="L43">    private final Map&lt;String, Long&gt; lastSeqBySymbol = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L44">    private final Map&lt;String, Instant&gt; lastTickTimeBySymbol = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L45">    private final Set&lt;String&gt; staleSymbols = ConcurrentHashMap.newKeySet();</span>
+<span class="fc" id="L46">    private final Map&lt;String, Instant&gt; staleRecoveryStartBySymbol = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L47">    private final AtomicLong totalTicks = new AtomicLong(0);</span>
+<span class="fc" id="L48">    private final AtomicLong gapEventCount = new AtomicLong(0);</span>
+<span class="fc" id="L49">    private final AtomicLong missingSequenceCount = new AtomicLong(0);</span>
+
+<span class="fc" id="L51">    private long heartbeatThresholdMs = DEFAULT_HEARTBEAT_THRESHOLD_MS;</span>
+<span class="fc" id="L52">    private long staleRecoveryWindowMs = DEFAULT_STALE_RECOVERY_WINDOW_MS;</span>
+
+    @Override
+    public String getArea() {
+<span class="fc" id="L56">        return Area.COMPLETENESS.name();</span>
+    }
+
+    @Override
+    public void onTick(Tick tick) {
+        // Idempotent: skip already-processed sequence numbers
+<span class="fc" id="L62">        Long lastSeq = lastSeqBySymbol.get(tick.getSymbol());</span>
+<span class="fc bfc" id="L63" title="All 4 branches covered.">        if (lastSeq != null &amp;&amp; tick.getSequenceNum() &lt;= lastSeq) {</span>
+<span class="fc" id="L64">            return;</span>
+        }
+
+<span class="fc" id="L67">        totalTicks.incrementAndGet();</span>
+
+        // Gap detection: seqNum should be lastSeq + 1
+<span class="fc bfc" id="L70" title="All 4 branches covered.">        if (lastSeq != null &amp;&amp; tick.getSequenceNum() != lastSeq + 1) {</span>
+<span class="fc" id="L71">            long missedCount = tick.getSequenceNum() - lastSeq - 1;</span>
+<span class="fc" id="L72">            gapEventCount.incrementAndGet();</span>
+<span class="fc" id="L73">            missingSequenceCount.addAndGet(Math.max(0, missedCount));</span>
+<span class="fc" id="L74">            log.debug(&quot;Sequence gap: symbol={} expected={} got={} missed={}&quot;,</span>
+<span class="fc" id="L75">                    tick.getSymbol(), lastSeq + 1, tick.getSequenceNum(), missedCount);</span>
+        }
+
+        // Staleness detection: time since last tick
+<span class="fc" id="L79">        Instant lastTime = lastTickTimeBySymbol.get(tick.getSymbol());</span>
+<span class="pc bpc" id="L80" title="1 of 4 branches missed.">        if (lastTime != null &amp;&amp; tick.getReceivedTimestamp() != null) {</span>
+<span class="fc" id="L81">            long gapMs = Duration.between(lastTime, tick.getReceivedTimestamp()).toMillis();</span>
+<span class="fc bfc" id="L82" title="All 2 branches covered.">            if (gapMs &gt; heartbeatThresholdMs) {</span>
+<span class="fc" id="L83">                staleSymbols.add(tick.getSymbol());</span>
+<span class="fc" id="L84">                staleRecoveryStartBySymbol.remove(tick.getSymbol()); // reset recovery timer</span>
+<span class="fc" id="L85">                log.debug(&quot;Stale symbol detected: {} gap={}ms threshold={}ms&quot;,</span>
+<span class="fc" id="L86">                        tick.getSymbol(), gapMs, heartbeatThresholdMs);</span>
+<span class="fc bfc" id="L87" title="All 2 branches covered.">            } else if (staleSymbols.contains(tick.getSymbol())) {</span>
+                // Hysteresis: only remove from staleSymbols after staleRecoveryWindowMs of
+                // consistent ticks — prevents oscillation on unstable feeds.
+<span class="fc" id="L90">                Instant recoveryStart = staleRecoveryStartBySymbol.computeIfAbsent(</span>
+<span class="fc" id="L91">                        tick.getSymbol(), k -&gt; tick.getReceivedTimestamp());</span>
+<span class="fc" id="L92">                long recoveredMs = Duration.between(recoveryStart, tick.getReceivedTimestamp()).toMillis();</span>
+<span class="fc bfc" id="L93" title="All 2 branches covered.">                if (recoveredMs &gt;= staleRecoveryWindowMs) {</span>
+<span class="fc" id="L94">                    staleSymbols.remove(tick.getSymbol());</span>
+<span class="fc" id="L95">                    staleRecoveryStartBySymbol.remove(tick.getSymbol());</span>
+<span class="fc" id="L96">                    log.debug(&quot;Stale symbol recovered after {}ms: {}&quot;, recoveredMs, tick.getSymbol());</span>
+                }
+            }
+        }
+
+        // Update tracking state
+<span class="fc" id="L102">        lastSeqBySymbol.put(tick.getSymbol(), tick.getSequenceNum());</span>
+<span class="pc bpc" id="L103" title="1 of 2 branches missed.">        if (tick.getReceivedTimestamp() != null) {</span>
+<span class="fc" id="L104">            lastTickTimeBySymbol.put(tick.getSymbol(), tick.getReceivedTimestamp());</span>
+        }
+<span class="fc" id="L106">    }</span>
+
+    @Override
+    public ValidationResult getResult() {
+<span class="fc bfc" id="L110" title="All 2 branches covered.">        if (totalTicks.get() == 0) {</span>
+<span class="fc" id="L111">            return ValidationResult.pass(Area.COMPLETENESS,</span>
+                    &quot;No ticks processed yet&quot;, 100.0, DEFAULT_PASS_THRESHOLD);
+        }
+
+<span class="fc" id="L115">        long gapEvents = gapEventCount.get();</span>
+<span class="fc" id="L116">        long missingSeqs = missingSequenceCount.get();</span>
+<span class="fc" id="L117">        long total = totalTicks.get();</span>
+<span class="fc" id="L118">        int stale = staleSymbols.size();</span>
+
+        // Completeness rate: expected ticks vs actual
+        // totalTicks = ticks received; ticks + missingSeqs = expected
+<span class="fc" id="L122">        double completenessRate = 100.0 * total / (total + missingSeqs);</span>
+
+        Status status;
+<span class="fc bfc" id="L125" title="All 4 branches covered.">        if (stale &gt; 0 || completenessRate &lt; DEFAULT_WARN_THRESHOLD) {</span>
+<span class="fc" id="L126">            status = Status.FAIL;</span>
+<span class="fc bfc" id="L127" title="All 2 branches covered.">        } else if (completenessRate &lt; DEFAULT_PASS_THRESHOLD) {</span>
+<span class="fc" id="L128">            status = Status.WARN;</span>
+        } else {
+<span class="fc" id="L130">            status = Status.PASS;</span>
+        }
+
+<span class="fc" id="L133">        String message = String.format(</span>
+                &quot;gapEvents=%d, missingSeqs=%d, stale symbols=%d (%s), total ticks=%d&quot;,
+<span class="fc" id="L135">                gapEvents, missingSeqs, stale, staleSymbols, total);</span>
+
+<span class="fc" id="L137">        ValidationResult result = new ValidationResult(Area.COMPLETENESS, status,</span>
+                message, completenessRate, DEFAULT_PASS_THRESHOLD);
+<span class="fc" id="L139">        result.getDetails().put(&quot;gapEventCount&quot;, gapEvents);</span>
+<span class="fc" id="L140">        result.getDetails().put(&quot;missingSequenceCount&quot;, missingSeqs);</span>
+<span class="fc" id="L141">        result.getDetails().put(&quot;completenessRate&quot;, completenessRate);</span>
+<span class="fc" id="L142">        result.getDetails().put(&quot;staleSymbolCount&quot;, stale);</span>
+<span class="fc" id="L143">        result.getDetails().put(&quot;staleSymbols&quot;, Set.copyOf(staleSymbols));</span>
+<span class="fc" id="L144">        result.getDetails().put(&quot;totalTicks&quot;, total);</span>
+<span class="fc" id="L145">        result.getDetails().put(&quot;trackedSymbols&quot;, lastSeqBySymbol.size());</span>
+
+<span class="fc" id="L147">        return result;</span>
+    }
+
+    @Override
+    public void reset() {
+<span class="fc" id="L152">        lastSeqBySymbol.clear();</span>
+<span class="fc" id="L153">        lastTickTimeBySymbol.clear();</span>
+<span class="fc" id="L154">        staleSymbols.clear();</span>
+<span class="fc" id="L155">        staleRecoveryStartBySymbol.clear();</span>
+<span class="fc" id="L156">        totalTicks.set(0);</span>
+<span class="fc" id="L157">        gapEventCount.set(0);</span>
+<span class="fc" id="L158">        missingSequenceCount.set(0);</span>
+<span class="fc" id="L159">    }</span>
+
+    @Override
+    public void configure(Map&lt;String, Object&gt; config) {
+<span class="fc bfc" id="L163" title="All 2 branches covered.">        if (config.containsKey(&quot;heartbeatThresholdMs&quot;)) {</span>
+<span class="fc" id="L164">            heartbeatThresholdMs = ((Number) config.get(&quot;heartbeatThresholdMs&quot;)).longValue();</span>
+        }
+<span class="fc bfc" id="L166" title="All 2 branches covered.">        if (config.containsKey(&quot;staleRecoveryWindowMs&quot;)) {</span>
+<span class="fc" id="L167">            staleRecoveryWindowMs = ((Number) config.get(&quot;staleRecoveryWindowMs&quot;)).longValue();</span>
+        }
+<span class="fc" id="L169">    }</span>
+
+    // --- Visible for testing ---
+
+    long getTotalTicks() {
+<span class="fc" id="L174">        return totalTicks.get();</span>
+    }
+
+    long getGapEventCount() {
+<span class="nc" id="L178">        return gapEventCount.get();</span>
+    }
+
+    long getMissingSequenceCount() {
+<span class="fc" id="L182">        return missingSequenceCount.get();</span>
+    }
+
+    Set&lt;String&gt; getStaleSymbols() {
+<span class="fc" id="L186">        return Set.copyOf(staleSymbols);</span>
+    }
+
+    int getTrackedSymbolCount() {
+<span class="fc" id="L190">        return lastSeqBySymbol.size();</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ComplianceController.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.controller</a> &gt; <span class="el_source">ComplianceController.java</span></div><h1>ComplianceController.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.controller;
+
+import com.marketdata.validator.model.ValidationResult;
+import com.marketdata.validator.validator.ValidatorEngine;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.time.Instant;
+import java.util.Map;
+
+/**
+ * REST controller exposing MiFID-II / ESMA-compliant compliance metrics.
+ *
+ * Blueprint Section 4 — ComplianceController:
+ *   GET /api/compliance — returns 6 MiFID-II health fields derived from validator results.
+ *
+ * Field mapping:
+ *   art27TimestampAccuracy    ← LATENCY validator  (p95 &lt; 100ms → PASS)
+ *   art64PreTradeTransparency ← ACCURACY validator  (PASS → PASS)
+ *   art65PostTradeReporting   ← COMPLETENESS validator (gapEvents = 0 → PASS)
+ *   rts22TradeIdUniqueness    ← ORDERING validator  (duplicates = 0 → PASS)
+ *   auditTrailCompleteness    ← COMPLETENESS validator (completenessRate ≥ 99.99% → PASS)
+ *   ohlcReconciliation        ← STATEFUL validator  (PASS → PASS)
+ */
+@RestController
+@RequestMapping(&quot;/api/compliance&quot;)
+public class ComplianceController {
+
+    private static final long ART27_LATENCY_THRESHOLD_MS = 100;
+
+    private final ValidatorEngine validatorEngine;
+
+<span class="fc" id="L35">    public ComplianceController(ValidatorEngine validatorEngine) {</span>
+<span class="fc" id="L36">        this.validatorEngine = validatorEngine;</span>
+<span class="fc" id="L37">    }</span>
+
+    @GetMapping
+    public ResponseEntity&lt;Map&lt;String, Object&gt;&gt; getCompliance() {
+<span class="fc" id="L41">        Map&lt;String, ValidationResult&gt; byArea = validatorEngine.getResultsByArea();</span>
+
+<span class="fc" id="L43">        ValidationResult latency = byArea.get(&quot;LATENCY&quot;);</span>
+<span class="fc" id="L44">        ValidationResult accuracy = byArea.get(&quot;ACCURACY&quot;);</span>
+<span class="fc" id="L45">        ValidationResult completeness = byArea.get(&quot;COMPLETENESS&quot;);</span>
+<span class="fc" id="L46">        ValidationResult ordering = byArea.get(&quot;ORDERING&quot;);</span>
+<span class="fc" id="L47">        ValidationResult stateful = byArea.get(&quot;STATEFUL&quot;);</span>
+
+<span class="fc" id="L49">        String art27 = deriveArt27(latency);</span>
+<span class="fc" id="L50">        String art64 = deriveStatus(accuracy);</span>
+<span class="fc" id="L51">        String art65 = deriveArt65(completeness);</span>
+<span class="fc" id="L52">        String rts22 = deriveRts22(ordering);</span>
+<span class="fc" id="L53">        String auditTrail = deriveAuditTrail(completeness);</span>
+<span class="fc" id="L54">        String ohlc = deriveStatus(stateful);</span>
+
+<span class="fc" id="L56">        Map&lt;String, Object&gt; report = Map.of(</span>
+<span class="fc" id="L57">                &quot;timestamp&quot;, Instant.now(),</span>
+                &quot;art27TimestampAccuracy&quot;, art27,
+                &quot;art64PreTradeTransparency&quot;, art64,
+                &quot;art65PostTradeReporting&quot;, art65,
+                &quot;rts22TradeIdUniqueness&quot;, rts22,
+                &quot;auditTrailCompleteness&quot;, auditTrail,
+                &quot;ohlcReconciliation&quot;, ohlc
+        );
+
+<span class="fc" id="L66">        return ResponseEntity.ok(report);</span>
+    }
+
+    // --- Derivation helpers ---
+
+    /** ART 27: timestamp accuracy PASS when p95 latency &lt; 100ms */
+    private String deriveArt27(ValidationResult latency) {
+<span class="fc bfc" id="L73" title="All 2 branches covered.">        if (latency == null) return &quot;UNKNOWN&quot;;</span>
+<span class="pc bpc" id="L74" title="1 of 2 branches missed.">        Object p95raw = latency.getDetails() != null ? latency.getDetails().get(&quot;p95&quot;) : null;</span>
+<span class="pc bpc" id="L75" title="1 of 2 branches missed.">        if (p95raw instanceof Number p95) {</span>
+<span class="fc bfc" id="L76" title="All 2 branches covered.">            return p95.longValue() &lt; ART27_LATENCY_THRESHOLD_MS ? &quot;PASS&quot; : &quot;FAIL&quot;;</span>
+        }
+<span class="nc" id="L78">        return statusName(latency.getStatus());</span>
+    }
+
+    /** ART 65: post-trade reporting PASS when there are 0 gap events */
+    private String deriveArt65(ValidationResult completeness) {
+<span class="fc bfc" id="L83" title="All 2 branches covered.">        if (completeness == null) return &quot;UNKNOWN&quot;;</span>
+<span class="pc bpc" id="L84" title="1 of 2 branches missed.">        Object gaps = completeness.getDetails() != null ? completeness.getDetails().get(&quot;gapEventCount&quot;) : null;</span>
+<span class="fc bfc" id="L85" title="All 2 branches covered.">        if (gaps instanceof Number gapNum) {</span>
+<span class="fc bfc" id="L86" title="All 2 branches covered.">            return gapNum.longValue() == 0 ? &quot;PASS&quot; : &quot;FAIL&quot;;</span>
+        }
+<span class="fc" id="L88">        return statusName(completeness.getStatus());</span>
+    }
+
+    /** RTS 22: trade ID uniqueness PASS when no duplicate ordering violations */
+    private String deriveRts22(ValidationResult ordering) {
+<span class="fc bfc" id="L93" title="All 2 branches covered.">        if (ordering == null) return &quot;UNKNOWN&quot;;</span>
+<span class="pc bpc" id="L94" title="1 of 2 branches missed.">        Object dups = ordering.getDetails() != null ? ordering.getDetails().get(&quot;duplicateCount&quot;) : null;</span>
+<span class="fc bfc" id="L95" title="All 2 branches covered.">        if (dups instanceof Number dupNum) {</span>
+<span class="fc bfc" id="L96" title="All 2 branches covered.">            return dupNum.longValue() == 0 ? &quot;PASS&quot; : &quot;FAIL&quot;;</span>
+        }
+<span class="fc" id="L98">        return statusName(ordering.getStatus());</span>
+    }
+
+    /** Audit Trail: PASS when completeness rate ≥ 99.99% */
+    private String deriveAuditTrail(ValidationResult completeness) {
+<span class="fc bfc" id="L103" title="All 2 branches covered.">        if (completeness == null) return &quot;UNKNOWN&quot;;</span>
+<span class="pc bpc" id="L104" title="1 of 2 branches missed.">        Object rateRaw = completeness.getDetails() != null ? completeness.getDetails().get(&quot;completenessRate&quot;) : null;</span>
+<span class="fc bfc" id="L105" title="All 2 branches covered.">        if (rateRaw instanceof Number rate) {</span>
+<span class="fc" id="L106">            double r = rate.doubleValue();</span>
+<span class="pc bpc" id="L107" title="1 of 2 branches missed.">            if (r &gt;= 99.99) return &quot;PASS&quot;;</span>
+<span class="pc bpc" id="L108" title="1 of 2 branches missed.">            if (r &gt;= 99.0) return &quot;WARN&quot;;</span>
+<span class="nc" id="L109">            return &quot;FAIL&quot;;</span>
+        }
+<span class="fc" id="L111">        return statusName(completeness.getStatus());</span>
+    }
+
+    private String deriveStatus(ValidationResult result) {
+<span class="fc bfc" id="L115" title="All 2 branches covered.">        if (result == null) return &quot;UNKNOWN&quot;;</span>
+<span class="fc" id="L116">        return statusName(result.getStatus());</span>
+    }
+
+    private String statusName(ValidationResult.Status status) {
+<span class="pc bpc" id="L120" title="1 of 2 branches missed.">        return status == null ? &quot;UNKNOWN&quot; : status.name();</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

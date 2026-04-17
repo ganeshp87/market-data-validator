@@ -1,0 +1,289 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>CompareController.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">stream-validator</a> &gt; <a href="index.source.html" class="el_package">com.marketdata.validator.controller</a> &gt; <span class="el_source">CompareController.java</span></div><h1>CompareController.java</h1><pre class="source lang-java linenums">package com.marketdata.validator.controller;
+
+import com.marketdata.validator.model.Session;
+import com.marketdata.validator.model.Tick;
+import com.marketdata.validator.store.SessionStore;
+import com.marketdata.validator.store.TickStore;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.math.BigDecimal;
+import java.math.MathContext;
+import java.util.*;
+import java.util.stream.Collectors;
+
+/**
+ * Compare two recorded sessions to detect deployment regressions.
+ *
+ * Blueprint Section 14 — Compare Mode:
+ *   POST /api/compare { sessionIdA, sessionIdB }
+ *   Returns: price differences, volume differences, sequence gaps,
+ *            latency patterns, missing symbols
+ *
+ * Use cases:
+ *   - Before vs After deployment (regression detection)
+ *   - Exchange A vs Exchange B (consistency check)
+ *   - Replay vs Live (baseline validation)
+ */
+@RestController
+@RequestMapping(&quot;/api/compare&quot;)
+public class CompareController {
+
+    private final SessionStore sessionStore;
+    private final TickStore tickStore;
+
+<span class="fc" id="L35">    public CompareController(SessionStore sessionStore, TickStore tickStore) {</span>
+<span class="fc" id="L36">        this.sessionStore = sessionStore;</span>
+<span class="fc" id="L37">        this.tickStore = tickStore;</span>
+<span class="fc" id="L38">    }</span>
+
+    /**
+     * Compare two sessions.
+     * Body: { &quot;sessionIdA&quot;: 1, &quot;sessionIdB&quot;: 2 }
+     */
+    @PostMapping
+    public ResponseEntity&lt;?&gt; compareSessions(@RequestBody Map&lt;String, Long&gt; body) {
+<span class="fc" id="L46">        Long idA = body.get(&quot;sessionIdA&quot;);</span>
+<span class="fc" id="L47">        Long idB = body.get(&quot;sessionIdB&quot;);</span>
+
+<span class="pc bpc" id="L49" title="1 of 4 branches missed.">        if (idA == null || idB == null) {</span>
+<span class="fc" id="L50">            return ResponseEntity.badRequest()</span>
+<span class="fc" id="L51">                    .body(Map.of(&quot;error&quot;, &quot;Both 'sessionIdA' and 'sessionIdB' are required&quot;));</span>
+        }
+<span class="fc bfc" id="L53" title="All 2 branches covered.">        if (idA.equals(idB)) {</span>
+<span class="fc" id="L54">            return ResponseEntity.badRequest()</span>
+<span class="fc" id="L55">                    .body(Map.of(&quot;error&quot;, &quot;Cannot compare a session with itself&quot;));</span>
+        }
+
+<span class="fc" id="L58">        Optional&lt;Session&gt; sessionA = sessionStore.findById(idA);</span>
+<span class="fc" id="L59">        Optional&lt;Session&gt; sessionB = sessionStore.findById(idB);</span>
+
+<span class="fc bfc" id="L61" title="All 2 branches covered.">        if (sessionA.isEmpty()) {</span>
+<span class="fc" id="L62">            return ResponseEntity.badRequest()</span>
+<span class="fc" id="L63">                    .body(Map.of(&quot;error&quot;, &quot;Session A not found: &quot; + idA));</span>
+        }
+<span class="fc bfc" id="L65" title="All 2 branches covered.">        if (sessionB.isEmpty()) {</span>
+<span class="fc" id="L66">            return ResponseEntity.badRequest()</span>
+<span class="fc" id="L67">                    .body(Map.of(&quot;error&quot;, &quot;Session B not found: &quot; + idB));</span>
+        }
+
+<span class="fc" id="L70">        List&lt;Tick&gt; ticksA = tickStore.findBySessionId(idA);</span>
+<span class="fc" id="L71">        List&lt;Tick&gt; ticksB = tickStore.findBySessionId(idB);</span>
+
+<span class="fc" id="L73">        Map&lt;String, Object&gt; result = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L74">        result.put(&quot;sessionA&quot;, sessionSummary(sessionA.get(), ticksA.size()));</span>
+<span class="fc" id="L75">        result.put(&quot;sessionB&quot;, sessionSummary(sessionB.get(), ticksB.size()));</span>
+<span class="fc" id="L76">        result.put(&quot;priceDifferences&quot;, comparePrices(ticksA, ticksB));</span>
+<span class="fc" id="L77">        result.put(&quot;volumeDifferences&quot;, compareVolumes(ticksA, ticksB));</span>
+<span class="fc" id="L78">        result.put(&quot;sequenceGaps&quot;, compareSequenceGaps(ticksA, ticksB));</span>
+<span class="fc" id="L79">        result.put(&quot;latencyPatterns&quot;, compareLatency(ticksA, ticksB));</span>
+<span class="fc" id="L80">        result.put(&quot;missingSymbols&quot;, compareMissingSymbols(ticksA, ticksB));</span>
+
+<span class="fc" id="L82">        return ResponseEntity.ok(result);</span>
+    }
+
+    // ── Helpers ─────────────────────────────────────────
+
+    private Map&lt;String, Object&gt; sessionSummary(Session s, int tickCount) {
+<span class="fc" id="L88">        Map&lt;String, Object&gt; m = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L89">        m.put(&quot;id&quot;, s.getId());</span>
+<span class="fc" id="L90">        m.put(&quot;name&quot;, s.getName());</span>
+<span class="fc" id="L91">        m.put(&quot;tickCount&quot;, tickCount);</span>
+<span class="fc" id="L92">        m.put(&quot;startedAt&quot;, s.getStartedAt());</span>
+<span class="fc" id="L93">        m.put(&quot;endedAt&quot;, s.getEndedAt());</span>
+<span class="fc" id="L94">        return m;</span>
+    }
+
+    /**
+     * Compare average prices per symbol between sessions.
+     * Returns list of { symbol, avgPriceA, avgPriceB, diffPercent }
+     */
+    private List&lt;Map&lt;String, Object&gt;&gt; comparePrices(List&lt;Tick&gt; ticksA, List&lt;Tick&gt; ticksB) {
+<span class="fc" id="L102">        Map&lt;String, BigDecimal&gt; avgA = averagePriceBySymbol(ticksA);</span>
+<span class="fc" id="L103">        Map&lt;String, BigDecimal&gt; avgB = averagePriceBySymbol(ticksB);</span>
+
+<span class="fc" id="L105">        Set&lt;String&gt; allSymbols = new TreeSet&lt;&gt;();</span>
+<span class="fc" id="L106">        allSymbols.addAll(avgA.keySet());</span>
+<span class="fc" id="L107">        allSymbols.addAll(avgB.keySet());</span>
+
+<span class="fc" id="L109">        List&lt;Map&lt;String, Object&gt;&gt; diffs = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L110" title="All 2 branches covered.">        for (String symbol : allSymbols) {</span>
+<span class="fc" id="L111">            BigDecimal priceA = avgA.get(symbol);</span>
+<span class="fc" id="L112">            BigDecimal priceB = avgB.get(symbol);</span>
+<span class="pc bpc" id="L113" title="1 of 4 branches missed.">            if (priceA == null || priceB == null) continue;</span>
+
+<span class="fc" id="L115">            BigDecimal diff = priceB.subtract(priceA);</span>
+<span class="pc bpc" id="L116" title="1 of 2 branches missed.">            double diffPercent = priceA.compareTo(BigDecimal.ZERO) != 0</span>
+<span class="fc" id="L117">                    ? diff.divide(priceA, MathContext.DECIMAL64).doubleValue() * 100.0</span>
+<span class="pc" id="L118">                    : 0.0;</span>
+
+<span class="fc" id="L120">            Map&lt;String, Object&gt; entry = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L121">            entry.put(&quot;symbol&quot;, symbol);</span>
+<span class="fc" id="L122">            entry.put(&quot;avgPriceA&quot;, priceA.toPlainString());</span>
+<span class="fc" id="L123">            entry.put(&quot;avgPriceB&quot;, priceB.toPlainString());</span>
+<span class="fc" id="L124">            entry.put(&quot;diffPercent&quot;, Math.round(diffPercent * 100.0) / 100.0);</span>
+<span class="fc" id="L125">            diffs.add(entry);</span>
+<span class="fc" id="L126">        }</span>
+<span class="fc" id="L127">        return diffs;</span>
+    }
+
+    /**
+     * Compare average volumes per symbol.
+     */
+    private List&lt;Map&lt;String, Object&gt;&gt; compareVolumes(List&lt;Tick&gt; ticksA, List&lt;Tick&gt; ticksB) {
+<span class="fc" id="L134">        Map&lt;String, BigDecimal&gt; avgA = averageVolumeBySymbol(ticksA);</span>
+<span class="fc" id="L135">        Map&lt;String, BigDecimal&gt; avgB = averageVolumeBySymbol(ticksB);</span>
+
+<span class="fc" id="L137">        Set&lt;String&gt; allSymbols = new TreeSet&lt;&gt;();</span>
+<span class="fc" id="L138">        allSymbols.addAll(avgA.keySet());</span>
+<span class="fc" id="L139">        allSymbols.addAll(avgB.keySet());</span>
+
+<span class="fc" id="L141">        List&lt;Map&lt;String, Object&gt;&gt; diffs = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L142" title="All 2 branches covered.">        for (String symbol : allSymbols) {</span>
+<span class="fc" id="L143">            BigDecimal volA = avgA.get(symbol);</span>
+<span class="fc" id="L144">            BigDecimal volB = avgB.get(symbol);</span>
+<span class="pc bpc" id="L145" title="1 of 4 branches missed.">            if (volA == null || volB == null) continue;</span>
+
+<span class="fc" id="L147">            BigDecimal diff = volB.subtract(volA);</span>
+<span class="pc bpc" id="L148" title="1 of 2 branches missed.">            double diffPercent = volA.compareTo(BigDecimal.ZERO) != 0</span>
+<span class="fc" id="L149">                    ? diff.divide(volA, MathContext.DECIMAL64).doubleValue() * 100.0</span>
+<span class="pc" id="L150">                    : 0.0;</span>
+
+<span class="fc" id="L152">            Map&lt;String, Object&gt; entry = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L153">            entry.put(&quot;symbol&quot;, symbol);</span>
+<span class="fc" id="L154">            entry.put(&quot;avgVolumeA&quot;, volA.toPlainString());</span>
+<span class="fc" id="L155">            entry.put(&quot;avgVolumeB&quot;, volB.toPlainString());</span>
+<span class="fc" id="L156">            entry.put(&quot;diffPercent&quot;, Math.round(diffPercent * 100.0) / 100.0);</span>
+<span class="fc" id="L157">            diffs.add(entry);</span>
+<span class="fc" id="L158">        }</span>
+<span class="fc" id="L159">        return diffs;</span>
+    }
+
+    /**
+     * Compare sequence gaps per symbol.
+     * A gap is a jump &gt; 1 in sequential sequence numbers for a symbol.
+     */
+    private Map&lt;String, Object&gt; compareSequenceGaps(List&lt;Tick&gt; ticksA, List&lt;Tick&gt; ticksB) {
+<span class="fc" id="L167">        Map&lt;String, Integer&gt; gapsA = countSequenceGaps(ticksA);</span>
+<span class="fc" id="L168">        Map&lt;String, Integer&gt; gapsB = countSequenceGaps(ticksB);</span>
+
+<span class="fc" id="L170">        int totalGapsA = gapsA.values().stream().mapToInt(Integer::intValue).sum();</span>
+<span class="fc" id="L171">        int totalGapsB = gapsB.values().stream().mapToInt(Integer::intValue).sum();</span>
+
+<span class="fc" id="L173">        Map&lt;String, Object&gt; result = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L174">        result.put(&quot;totalGapsA&quot;, totalGapsA);</span>
+<span class="fc" id="L175">        result.put(&quot;totalGapsB&quot;, totalGapsB);</span>
+<span class="fc" id="L176">        result.put(&quot;newGapsInB&quot;, Math.max(0, totalGapsB - totalGapsA));</span>
+<span class="fc" id="L177">        result.put(&quot;perSymbolA&quot;, gapsA);</span>
+<span class="fc" id="L178">        result.put(&quot;perSymbolB&quot;, gapsB);</span>
+<span class="fc" id="L179">        return result;</span>
+    }
+
+    /**
+     * Compare latency stats (p50, p95, max) per session.
+     */
+    private Map&lt;String, Object&gt; compareLatency(List&lt;Tick&gt; ticksA, List&lt;Tick&gt; ticksB) {
+<span class="fc" id="L186">        Map&lt;String, Object&gt; result = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L187">        result.put(&quot;sessionA&quot;, latencyStats(ticksA));</span>
+<span class="fc" id="L188">        result.put(&quot;sessionB&quot;, latencyStats(ticksB));</span>
+<span class="fc" id="L189">        return result;</span>
+    }
+
+    /**
+     * Find symbols present in one session but not the other.
+     */
+    private Map&lt;String, Object&gt; compareMissingSymbols(List&lt;Tick&gt; ticksA, List&lt;Tick&gt; ticksB) {
+<span class="fc" id="L196">        Set&lt;String&gt; symbolsA = ticksA.stream().map(Tick::getSymbol).collect(Collectors.toSet());</span>
+<span class="fc" id="L197">        Set&lt;String&gt; symbolsB = ticksB.stream().map(Tick::getSymbol).collect(Collectors.toSet());</span>
+
+<span class="fc" id="L199">        Set&lt;String&gt; onlyInA = new TreeSet&lt;&gt;(symbolsA);</span>
+<span class="fc" id="L200">        onlyInA.removeAll(symbolsB);</span>
+
+<span class="fc" id="L202">        Set&lt;String&gt; onlyInB = new TreeSet&lt;&gt;(symbolsB);</span>
+<span class="fc" id="L203">        onlyInB.removeAll(symbolsA);</span>
+
+<span class="fc" id="L205">        Map&lt;String, Object&gt; result = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L206">        result.put(&quot;onlyInA&quot;, onlyInA);</span>
+<span class="fc" id="L207">        result.put(&quot;onlyInB&quot;, onlyInB);</span>
+<span class="fc" id="L208">        return result;</span>
+    }
+
+    // ── Statistical helpers ─────────────────────────────
+
+    private Map&lt;String, BigDecimal&gt; averagePriceBySymbol(List&lt;Tick&gt; ticks) {
+<span class="fc" id="L214">        return ticks.stream()</span>
+<span class="pc bpc" id="L215" title="1 of 2 branches missed.">                .filter(t -&gt; t.getPrice() != null)</span>
+<span class="fc" id="L216">                .collect(Collectors.groupingBy(Tick::getSymbol))</span>
+<span class="fc" id="L217">                .entrySet().stream()</span>
+<span class="fc" id="L218">                .collect(Collectors.toMap(</span>
+                        Map.Entry::getKey,
+                        e -&gt; {
+<span class="fc" id="L221">                            List&lt;Tick&gt; list = e.getValue();</span>
+<span class="fc" id="L222">                            BigDecimal sum = list.stream()</span>
+<span class="fc" id="L223">                                    .map(Tick::getPrice)</span>
+<span class="fc" id="L224">                                    .reduce(BigDecimal.ZERO, BigDecimal::add);</span>
+<span class="fc" id="L225">                            return sum.divide(BigDecimal.valueOf(list.size()), MathContext.DECIMAL64);</span>
+                        }
+                ));
+    }
+
+    private Map&lt;String, BigDecimal&gt; averageVolumeBySymbol(List&lt;Tick&gt; ticks) {
+<span class="fc" id="L231">        return ticks.stream()</span>
+<span class="pc bpc" id="L232" title="1 of 2 branches missed.">                .filter(t -&gt; t.getVolume() != null)</span>
+<span class="fc" id="L233">                .collect(Collectors.groupingBy(Tick::getSymbol))</span>
+<span class="fc" id="L234">                .entrySet().stream()</span>
+<span class="fc" id="L235">                .collect(Collectors.toMap(</span>
+                        Map.Entry::getKey,
+                        e -&gt; {
+<span class="fc" id="L238">                            List&lt;Tick&gt; list = e.getValue();</span>
+<span class="fc" id="L239">                            BigDecimal sum = list.stream()</span>
+<span class="fc" id="L240">                                    .map(Tick::getVolume)</span>
+<span class="fc" id="L241">                                    .reduce(BigDecimal.ZERO, BigDecimal::add);</span>
+<span class="fc" id="L242">                            return sum.divide(BigDecimal.valueOf(list.size()), MathContext.DECIMAL64);</span>
+                        }
+                ));
+    }
+
+    private Map&lt;String, Integer&gt; countSequenceGaps(List&lt;Tick&gt; ticks) {
+<span class="fc" id="L248">        Map&lt;String, Integer&gt; gapCounts = new TreeMap&lt;&gt;();</span>
+<span class="fc" id="L249">        Map&lt;String, Long&gt; lastSeq = new HashMap&lt;&gt;();</span>
+
+<span class="fc bfc" id="L251" title="All 2 branches covered.">        for (Tick tick : ticks) {</span>
+<span class="fc" id="L252">            String symbol = tick.getSymbol();</span>
+<span class="fc" id="L253">            Long prev = lastSeq.get(symbol);</span>
+<span class="fc bfc" id="L254" title="All 4 branches covered.">            if (prev != null &amp;&amp; tick.getSequenceNum() &gt; prev + 1) {</span>
+<span class="fc" id="L255">                gapCounts.merge(symbol, 1, Integer::sum);</span>
+            }
+<span class="fc" id="L257">            lastSeq.put(symbol, tick.getSequenceNum());</span>
+<span class="fc" id="L258">        }</span>
+<span class="fc" id="L259">        return gapCounts;</span>
+    }
+
+    private Map&lt;String, Object&gt; latencyStats(List&lt;Tick&gt; ticks) {
+<span class="fc" id="L263">        long[] latencies = ticks.stream()</span>
+<span class="fc" id="L264">                .mapToLong(Tick::getLatencyMs)</span>
+<span class="fc" id="L265">                .sorted()</span>
+<span class="fc" id="L266">                .toArray();</span>
+
+<span class="fc" id="L268">        Map&lt;String, Object&gt; stats = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc bfc" id="L269" title="All 2 branches covered.">        if (latencies.length == 0) {</span>
+<span class="fc" id="L270">            stats.put(&quot;count&quot;, 0);</span>
+<span class="fc" id="L271">            stats.put(&quot;p50&quot;, 0);</span>
+<span class="fc" id="L272">            stats.put(&quot;p95&quot;, 0);</span>
+<span class="fc" id="L273">            stats.put(&quot;max&quot;, 0);</span>
+<span class="fc" id="L274">            return stats;</span>
+        }
+
+<span class="fc" id="L277">        stats.put(&quot;count&quot;, latencies.length);</span>
+<span class="fc" id="L278">        stats.put(&quot;p50&quot;, percentile(latencies, 50));</span>
+<span class="fc" id="L279">        stats.put(&quot;p95&quot;, percentile(latencies, 95));</span>
+<span class="fc" id="L280">        stats.put(&quot;max&quot;, latencies[latencies.length - 1]);</span>
+<span class="fc" id="L281">        return stats;</span>
+    }
+
+    private long percentile(long[] sorted, int p) {
+<span class="fc" id="L285">        int index = (int) Math.ceil((p / 100.0) * sorted.length) - 1;</span>
+<span class="fc" id="L286">        return sorted[Math.max(0, Math.min(index, sorted.length - 1))];</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>
