@@ -84,8 +84,8 @@ public class SessionRecorder {
             lastFlushTime = System.currentTimeMillis();
             recording = true;
 
-            log.info("Started recording session id={} name='{}' feed={}",
-                    currentSession.getId(), name, feedId);
+                // Avoid logging user-controlled data directly
+                log.info("Started recording session");
             return currentSession;
         } finally {
             lock.unlock();
@@ -156,8 +156,7 @@ public class SessionRecorder {
             recording = false;
             currentSession = null;
 
-            log.info("Stopped recording session id={} ticks={} bytes={}",
-                    completed.getId(), tickCount, byteSize);
+            log.info("Stopped recording session — ticks={} bytes={}", tickCount, byteSize);
             return completed;
         } finally {
             lock.unlock();
