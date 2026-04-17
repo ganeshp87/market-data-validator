@@ -61,7 +61,7 @@ public class StreamController {
     // Throughput tracking
     private final AtomicLong ticksInWindow = new AtomicLong(0);
     private final AtomicLong totalTicksEver = new AtomicLong(0);
-    private volatile long peakPerSecond = 0;
+    private final AtomicLong peakPerSecond = new AtomicLong(0);
 
     // Scheduled executor for periodic stats
     private final ScheduledExecutorService scheduler =
@@ -171,7 +171,7 @@ public class StreamController {
                 "timestamp", Instant.now(),
                 "totalTicks", totalTicksEver.get(),
                 "messagesPerSecond", ticksInWindow.get(),
-                "peakPerSecond", peakPerSecond,
+                "peakPerSecond", peakPerSecond.get(),
                 "activeConnections", active,
                 "overallStatus", computeOverallStatus(results),
                 "activeEmitters", tickEmitters.size() + validationEmitters.size()
@@ -292,15 +292,13 @@ public class StreamController {
         }
 
         long currentRate = ticksInWindow.getAndSet(0);
-        if (currentRate > peakPerSecond) {
-            peakPerSecond = currentRate;
-        }
+        peakPerSecond.updateAndGet(prev -> Math.max(prev, currentRate));
         long total = totalTicksEver.get();
 
         Map<String, Object> payload = Map.of(
                 "timestamp", Instant.now(),
                 "messagesPerSecond", currentRate,
-                "peakPerSecond", peakPerSecond,
+                "peakPerSecond", peakPerSecond.get(),
                 "totalMessages", total
         );
 

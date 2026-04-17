@@ -235,92 +235,83 @@ public class LVWRChaosSimulator implements Runnable {
     private Tick buildTick(InstrumentState state, int instrId, FailureType failure) {
         BigDecimal price = state.nextPrice();
         BigDecimal volume = randomVolume();
-        long syntheticLatencyMs = 2 + (long) (RANDOM.nextDouble() * 18); // 2–19 ms
-
+        long latencyMs = 2 + (long) (RANDOM.nextDouble() * 18); // 2–19 ms
         String symbol = state.getSymbol();
 
-        if (failure == null) {
-            long seq = state.nextSeqNum();
-            Tick t = adapter.buildTick(feedId, symbol, price, volume, seq, syntheticLatencyMs, null);
-            state.setLastExchangeTimestamp(t.getExchangeTimestamp());
-            return t;
-        }
+        if (failure == null) return buildAndRecord(state, symbol, price, volume, latencyMs, null);
 
         return switch (failure) {
-            case NEGATIVE_PRICE -> {
-                BigDecimal negPrice = new BigDecimal("-0.125");
-                long seq = state.nextSeqNum();
-                Tick t = adapter.buildTick(feedId, symbol, negPrice, volume, seq, syntheticLatencyMs, failure);
-                state.setLastExchangeTimestamp(t.getExchangeTimestamp());
-                yield t;
-            }
-            case PRICE_SPIKE -> {
-                BigDecimal spikePrice = price.multiply(new BigDecimal("1.14"), MC); // +14%
-                state.setLastPrice(spikePrice);
-                long seq = state.nextSeqNum();
-                Tick t = adapter.buildTick(feedId, symbol, spikePrice, volume, seq, syntheticLatencyMs, failure);
-                state.setLastExchangeTimestamp(t.getExchangeTimestamp());
-                yield t;
-            }
-            case SEQUENCE_GAP -> {
-                // Advance the per-symbol counter by 5 extra to create a detectable gap.
-                // The CompletenessValidator will see seqNum jump by 6 (5 skipped + 1 new),
-                // recording 5 missing seqNums per gap event. This keeps the missing count
-                // proportional to the fault injection rate (Fix 5).
-                state.advanceSeqNum(5);
-                long seq = state.nextSeqNum();
-                Tick t = adapter.buildTick(feedId, symbol, price, volume, seq, syntheticLatencyMs, failure);
-                state.setLastExchangeTimestamp(t.getExchangeTimestamp());
-                yield t;
-            }
-            case DUPLICATE_TICK -> {
-                long seq = state.nextSeqNum();
-                Tick orig = adapter.buildTick(feedId, symbol, price, volume, seq, syntheticLatencyMs, failure);
-                state.setLastExchangeTimestamp(orig.getExchangeTimestamp());
-                tickConsumer.accept(orig); // emit original
-                ticksSent.incrementAndGet();
-                yield adapter.buildTick(feedId, symbol, price, volume, seq, syntheticLatencyMs, failure); // duplicate
-            }
-            case OUT_OF_ORDER -> {
-                // Use an ascending seqNum so the idempotency guard in validators does not
-                // discard the tick. The out-of-order condition is signalled by setting the
-                // exchange timestamp to be BEFORE the previous tick's exchange timestamp for
-                // this symbol — exactly what OrderingValidator checks.
-                long seq = state.nextSeqNum();
-                Tick t = adapter.buildTick(feedId, symbol, price, volume, seq, syntheticLatencyMs, failure);
-                Instant prevExchange = state.getLastExchangeTimestamp();
-                if (prevExchange != null) {
-                    t.setExchangeTimestamp(prevExchange.minusMillis(50));
-                }
-                // Do not update lastExchangeTimestamp — the next clean tick stays in order.
-                yield t;
-            }
-            case STALE_TIMESTAMP -> {
-                long seq = state.nextSeqNum();
-                Tick t = adapter.buildStaleTick(feedId, symbol, price, volume, seq);
-                state.setLastExchangeTimestamp(t.getExchangeTimestamp());
-                yield t;
-            }
-            case MALFORMED_PAYLOAD -> null; // null tick — signals CompletenessValidator of missing data
-            case SYMBOL_MISMATCH -> {
-                // Aggregate instrument 126 with wrong source instrument ID
-                long seq = state.nextSeqNum();
-                yield adapter.buildTick(feedId, instruments.get(126).getSymbol(), price, volume, seq, syntheticLatencyMs, failure);
-            }
-            case CUMVOL_BACKWARD -> {
-                state.decreaseCumVol(200);
-                long seq = state.nextSeqNum();
-                Tick t = adapter.buildTick(feedId, symbol, price, volume, seq, syntheticLatencyMs, failure);
-                state.setLastExchangeTimestamp(t.getExchangeTimestamp());
-                yield t;
-            }
-            default -> {
-                long seq = state.nextSeqNum();
-                Tick t = adapter.buildTick(feedId, symbol, price, volume, seq, syntheticLatencyMs, failure);
-                state.setLastExchangeTimestamp(t.getExchangeTimestamp());
-                yield t;
-            }
+            case NEGATIVE_PRICE  -> buildNegativePriceTick(state, symbol, volume, latencyMs);
+            case PRICE_SPIKE     -> buildPriceSpikeTick(state, symbol, price, volume, latencyMs);
+            case SEQUENCE_GAP    -> buildSequenceGapTick(state, symbol, price, volume, latencyMs);
+            case DUPLICATE_TICK  -> buildDuplicateTick(state, symbol, price, volume, latencyMs);
+            case OUT_OF_ORDER    -> buildOutOfOrderTick(state, symbol, price, volume, latencyMs);
+            case STALE_TIMESTAMP -> buildStaleTimestampTick(state, symbol, price, volume);
+            case MALFORMED_PAYLOAD -> null;
+            case SYMBOL_MISMATCH -> buildSymbolMismatchTick(state, price, volume, latencyMs);
+            case CUMVOL_BACKWARD -> buildCumVolBackwardTick(state, symbol, price, volume, latencyMs);
+            default              -> buildAndRecord(state, symbol, price, volume, latencyMs, failure);
         };
+    }
+
+    private Tick buildAndRecord(InstrumentState state, String symbol, BigDecimal price, BigDecimal volume, long latencyMs, FailureType failure) {
+        long seq = state.nextSeqNum();
+        Tick t = adapter.buildTick(feedId, symbol, price, volume, seq, latencyMs, failure);
+        state.setLastExchangeTimestamp(t.getExchangeTimestamp());
+        return t;
+    }
+
+    private Tick buildNegativePriceTick(InstrumentState state, String symbol, BigDecimal volume, long latencyMs) {
+        return buildAndRecord(state, symbol, new BigDecimal("-0.125"), volume, latencyMs, FailureType.NEGATIVE_PRICE);
+    }
+
+    private Tick buildPriceSpikeTick(InstrumentState state, String symbol, BigDecimal price, BigDecimal volume, long latencyMs) {
+        BigDecimal spikePrice = price.multiply(new BigDecimal("1.14"), MC); // +14%
+        state.setLastPrice(spikePrice);
+        return buildAndRecord(state, symbol, spikePrice, volume, latencyMs, FailureType.PRICE_SPIKE);
+    }
+
+    private Tick buildSequenceGapTick(InstrumentState state, String symbol, BigDecimal price, BigDecimal volume, long latencyMs) {
+        // Advance counter by 5 extra — CompletenessValidator sees a jump of 6 (5 skipped + 1 new)
+        state.advanceSeqNum(5);
+        return buildAndRecord(state, symbol, price, volume, latencyMs, FailureType.SEQUENCE_GAP);
+    }
+
+    private Tick buildDuplicateTick(InstrumentState state, String symbol, BigDecimal price, BigDecimal volume, long latencyMs) {
+        long seq = state.nextSeqNum();
+        Tick orig = adapter.buildTick(feedId, symbol, price, volume, seq, latencyMs, FailureType.DUPLICATE_TICK);
+        state.setLastExchangeTimestamp(orig.getExchangeTimestamp());
+        tickConsumer.accept(orig);
+        ticksSent.incrementAndGet();
+        return adapter.buildTick(feedId, symbol, price, volume, seq, latencyMs, FailureType.DUPLICATE_TICK);
+    }
+
+    private Tick buildOutOfOrderTick(InstrumentState state, String symbol, BigDecimal price, BigDecimal volume, long latencyMs) {
+        long seq = state.nextSeqNum();
+        Tick t = adapter.buildTick(feedId, symbol, price, volume, seq, latencyMs, FailureType.OUT_OF_ORDER);
+        Instant prevExchange = state.getLastExchangeTimestamp();
+        if (prevExchange != null) {
+            t.setExchangeTimestamp(prevExchange.minusMillis(50));
+        }
+        return t; // intentionally do not update lastExchangeTimestamp
+    }
+
+    private Tick buildStaleTimestampTick(InstrumentState state, String symbol, BigDecimal price, BigDecimal volume) {
+        long seq = state.nextSeqNum();
+        Tick t = adapter.buildStaleTick(feedId, symbol, price, volume, seq);
+        state.setLastExchangeTimestamp(t.getExchangeTimestamp());
+        return t;
+    }
+
+    private Tick buildSymbolMismatchTick(InstrumentState state, BigDecimal price, BigDecimal volume, long latencyMs) {
+        // Use aggregate instrument 126's symbol with a wrong source instrument
+        long seq = state.nextSeqNum();
+        return adapter.buildTick(feedId, instruments.get(126).getSymbol(), price, volume, seq, latencyMs, FailureType.SYMBOL_MISMATCH);
+    }
+
+    private Tick buildCumVolBackwardTick(InstrumentState state, String symbol, BigDecimal price, BigDecimal volume, long latencyMs) {
+        state.decreaseCumVol(200);
+        return buildAndRecord(state, symbol, price, volume, latencyMs, FailureType.CUMVOL_BACKWARD);
     }
 
     private void handleDisconnect() throws InterruptedException {
