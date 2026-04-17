@@ -56,7 +56,7 @@ public class FeedConnection {
 
     // Clock offset estimation: adjusts for skew between local clock and exchange
     private final long[] offsetSamples = new long[OFFSET_SAMPLE_SIZE];
-    private int offsetSampleCount = 0;
+    private final AtomicInteger offsetSampleCount = new AtomicInteger(0);
     private volatile long clockOffsetMs = 0;
     private volatile boolean offsetCalibrated = false;
 
@@ -216,8 +216,8 @@ public class FeedConnection {
         long rawMs = Duration.between(tick.getExchangeTimestamp(), tick.getReceivedTimestamp()).toMillis();
 
         if (!offsetCalibrated) {
-            offsetSamples[offsetSampleCount++] = rawMs;
-            if (offsetSampleCount >= OFFSET_SAMPLE_SIZE) {
+            offsetSamples[offsetSampleCount.getAndIncrement()] = rawMs;
+            if (offsetSampleCount.get() >= OFFSET_SAMPLE_SIZE) {
                 long minRaw = Arrays.stream(offsetSamples).min().orElse(0);
                 clockOffsetMs = minRaw - ASSUMED_MIN_NETWORK_MS;
                 offsetCalibrated = true;
@@ -233,7 +233,7 @@ public class FeedConnection {
     }
 
     void resetClockOffset() {
-        offsetSampleCount = 0;
+        offsetSampleCount.set(0);
         clockOffsetMs = 0;
         offsetCalibrated = false;
     }

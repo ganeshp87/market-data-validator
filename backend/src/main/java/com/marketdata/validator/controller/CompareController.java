@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.*;
 import java.math.BigDecimal;
 import java.math.MathContext;
 import java.util.*;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -73,8 +74,8 @@ public class CompareController {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("sessionA", sessionSummary(sessionA.get(), ticksA.size()));
         result.put("sessionB", sessionSummary(sessionB.get(), ticksB.size()));
-        result.put("priceDifferences", comparePrices(ticksA, ticksB));
-        result.put("volumeDifferences", compareVolumes(ticksA, ticksB));
+        result.put("priceDifferences", compareMetric(ticksA, ticksB, Tick::getPrice, "avgPriceA", "avgPriceB"));
+        result.put("volumeDifferences", compareMetric(ticksA, ticksB, Tick::getVolume, "avgVolumeA", "avgVolumeB"));
         result.put("sequenceGaps", compareSequenceGaps(ticksA, ticksB));
         result.put("latencyPatterns", compareLatency(ticksA, ticksB));
         result.put("missingSymbols", compareMissingSymbols(ticksA, ticksB));
@@ -94,13 +95,12 @@ public class CompareController {
         return m;
     }
 
-    /**
-     * Compare average prices per symbol between sessions.
-     * Returns list of { symbol, avgPriceA, avgPriceB, diffPercent }
-     */
-    private List<Map<String, Object>> comparePrices(List<Tick> ticksA, List<Tick> ticksB) {
-        Map<String, BigDecimal> avgA = averagePriceBySymbol(ticksA);
-        Map<String, BigDecimal> avgB = averagePriceBySymbol(ticksB);
+    private List<Map<String, Object>> compareMetric(
+            List<Tick> ticksA, List<Tick> ticksB,
+            Function<Tick, BigDecimal> extractor,
+            String labelA, String labelB) {
+        Map<String, BigDecimal> avgA = averageBySymbol(ticksA, extractor);
+        Map<String, BigDecimal> avgB = averageBySymbol(ticksB, extractor);
 
         Set<String> allSymbols = new TreeSet<>();
         allSymbols.addAll(avgA.keySet());
@@ -108,51 +108,19 @@ public class CompareController {
 
         List<Map<String, Object>> diffs = new ArrayList<>();
         for (String symbol : allSymbols) {
-            BigDecimal priceA = avgA.get(symbol);
-            BigDecimal priceB = avgB.get(symbol);
-            if (priceA == null || priceB == null) continue;
+            BigDecimal valA = avgA.get(symbol);
+            BigDecimal valB = avgB.get(symbol);
+            if (valA == null || valB == null) continue;
 
-            BigDecimal diff = priceB.subtract(priceA);
-            double diffPercent = priceA.compareTo(BigDecimal.ZERO) != 0
-                    ? diff.divide(priceA, MathContext.DECIMAL64).doubleValue() * 100.0
+            BigDecimal diff = valB.subtract(valA);
+            double diffPercent = valA.compareTo(BigDecimal.ZERO) != 0
+                    ? diff.divide(valA, MathContext.DECIMAL64).doubleValue() * 100.0
                     : 0.0;
 
             Map<String, Object> entry = new LinkedHashMap<>();
             entry.put("symbol", symbol);
-            entry.put("avgPriceA", priceA.toPlainString());
-            entry.put("avgPriceB", priceB.toPlainString());
-            entry.put("diffPercent", Math.round(diffPercent * 100.0) / 100.0);
-            diffs.add(entry);
-        }
-        return diffs;
-    }
-
-    /**
-     * Compare average volumes per symbol.
-     */
-    private List<Map<String, Object>> compareVolumes(List<Tick> ticksA, List<Tick> ticksB) {
-        Map<String, BigDecimal> avgA = averageVolumeBySymbol(ticksA);
-        Map<String, BigDecimal> avgB = averageVolumeBySymbol(ticksB);
-
-        Set<String> allSymbols = new TreeSet<>();
-        allSymbols.addAll(avgA.keySet());
-        allSymbols.addAll(avgB.keySet());
-
-        List<Map<String, Object>> diffs = new ArrayList<>();
-        for (String symbol : allSymbols) {
-            BigDecimal volA = avgA.get(symbol);
-            BigDecimal volB = avgB.get(symbol);
-            if (volA == null || volB == null) continue;
-
-            BigDecimal diff = volB.subtract(volA);
-            double diffPercent = volA.compareTo(BigDecimal.ZERO) != 0
-                    ? diff.divide(volA, MathContext.DECIMAL64).doubleValue() * 100.0
-                    : 0.0;
-
-            Map<String, Object> entry = new LinkedHashMap<>();
-            entry.put("symbol", symbol);
-            entry.put("avgVolumeA", volA.toPlainString());
-            entry.put("avgVolumeB", volB.toPlainString());
+            entry.put(labelA, valA.toPlainString());
+            entry.put(labelB, valB.toPlainString());
             entry.put("diffPercent", Math.round(diffPercent * 100.0) / 100.0);
             diffs.add(entry);
         }
@@ -210,9 +178,9 @@ public class CompareController {
 
     // ── Statistical helpers ─────────────────────────────
 
-    private Map<String, BigDecimal> averagePriceBySymbol(List<Tick> ticks) {
+    private Map<String, BigDecimal> averageBySymbol(List<Tick> ticks, Function<Tick, BigDecimal> extractor) {
         return ticks.stream()
-                .filter(t -> t.getPrice() != null)
+                .filter(t -> extractor.apply(t) != null)
                 .collect(Collectors.groupingBy(Tick::getSymbol))
                 .entrySet().stream()
                 .collect(Collectors.toMap(
@@ -220,24 +188,7 @@ public class CompareController {
                         e -> {
                             List<Tick> list = e.getValue();
                             BigDecimal sum = list.stream()
-                                    .map(Tick::getPrice)
-                                    .reduce(BigDecimal.ZERO, BigDecimal::add);
-                            return sum.divide(BigDecimal.valueOf(list.size()), MathContext.DECIMAL64);
-                        }
-                ));
-    }
-
-    private Map<String, BigDecimal> averageVolumeBySymbol(List<Tick> ticks) {
-        return ticks.stream()
-                .filter(t -> t.getVolume() != null)
-                .collect(Collectors.groupingBy(Tick::getSymbol))
-                .entrySet().stream()
-                .collect(Collectors.toMap(
-                        Map.Entry::getKey,
-                        e -> {
-                            List<Tick> list = e.getValue();
-                            BigDecimal sum = list.stream()
-                                    .map(Tick::getVolume)
+                                    .map(extractor)
                                     .reduce(BigDecimal.ZERO, BigDecimal::add);
                             return sum.divide(BigDecimal.valueOf(list.size()), MathContext.DECIMAL64);
                         }

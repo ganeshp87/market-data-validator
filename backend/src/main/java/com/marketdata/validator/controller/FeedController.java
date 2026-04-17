@@ -223,43 +223,32 @@ public class FeedController {
         if (url == null || url.isBlank()) {
             return "URL is required";
         }
-
-        // Must be a WebSocket URL
         if (!url.startsWith("wss://") && !url.startsWith("ws://")) {
             return "URL must use ws:// or wss:// scheme";
         }
-
         try {
             URI uri = URI.create(url);
             String host = uri.getHost();
             if (host == null || host.isBlank()) {
                 return "URL must have a valid host";
             }
-
-            // Resolve hostname — reject if DNS fails (unresolvable hostnames bypass IP checks)
-            InetAddress address;
-            try {
-                address = InetAddress.getByName(host);
-            } catch (Exception e) {
-                return "URL rejected: hostname could not be resolved. Only resolvable hostnames are permitted.";
-            }
-
-            if (address.isLoopbackAddress()) {
-                return "Loopback addresses are not allowed";
-            }
-            if (address.isSiteLocalAddress()) {
-                return "Private/internal IP addresses are not allowed";
-            }
-            if (address.isLinkLocalAddress()) {
-                return "Link-local addresses are not allowed";
-            }
-            if (address.isAnyLocalAddress()) {
-                return "Wildcard addresses are not allowed";
-            }
-
-            return null; // Valid
+            return resolveAndValidateHost(host);
         } catch (IllegalArgumentException e) {
             return "Invalid URL format";
         }
+    }
+
+    private static String resolveAndValidateHost(String host) {
+        InetAddress address;
+        try {
+            address = InetAddress.getByName(host);
+        } catch (Exception e) {
+            return "URL rejected: hostname could not be resolved. Only resolvable hostnames are permitted.";
+        }
+        if (address.isLoopbackAddress())  return "Loopback addresses are not allowed";
+        if (address.isSiteLocalAddress()) return "Private/internal IP addresses are not allowed";
+        if (address.isLinkLocalAddress()) return "Link-local addresses are not allowed";
+        if (address.isAnyLocalAddress())  return "Wildcard addresses are not allowed";
+        return null;
     }
 }

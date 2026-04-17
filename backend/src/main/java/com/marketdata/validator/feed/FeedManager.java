@@ -297,7 +297,7 @@ public class FeedManager {
     @PreDestroy
     void destroy() {
         log.info("FeedManager shutting down — disconnecting {} connection(s)", connections.size());
-        simulators.values().forEach(sim -> { try { sim.stop(); } catch (Exception ignored) {} });
+        simulators.values().forEach(sim -> { try { sim.stop(); } catch (Exception e) { log.warn("Failed to stop simulator: {}", e.getMessage()); } });
         connections.values().forEach(fc -> {
             try {
                 fc.disconnect();
