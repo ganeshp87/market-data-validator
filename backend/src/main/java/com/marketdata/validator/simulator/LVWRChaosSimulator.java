@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 import java.math.BigDecimal;
 import java.math.MathContext;
 import java.math.RoundingMode;
+import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -41,6 +42,7 @@ public class LVWRChaosSimulator implements Runnable {
 
     private static final Logger log = LoggerFactory.getLogger(LVWRChaosSimulator.class);
     private static final MathContext MC = new MathContext(8, RoundingMode.HALF_UP);
+    private static final SecureRandom RANDOM = new SecureRandom();
 
     // Deterministic emission order — blueprint-specified
     static final int[] EMISSION_ORDER = {126, 1, 2, 26, 20, 55, 8, 12, 54, 13, 14, 16, 19, 78, 9, 24, 23, 17};
@@ -233,7 +235,7 @@ public class LVWRChaosSimulator implements Runnable {
     private Tick buildTick(InstrumentState state, int instrId, FailureType failure) {
         BigDecimal price = state.nextPrice();
         BigDecimal volume = randomVolume();
-        long syntheticLatencyMs = 2 + (long) (Math.random() * 18); // 2–19 ms
+        long syntheticLatencyMs = 2 + (long) (RANDOM.nextDouble() * 18); // 2–19 ms
 
         String symbol = state.getSymbol();
 
@@ -377,13 +379,13 @@ public class LVWRChaosSimulator implements Runnable {
 
     private BigDecimal randomVolume() {
         // Rough log-normal distribution — mostly small lots
-        double u = Math.random();
+        double u = RANDOM.nextDouble();
         int qty;
-        if (u < 0.45) qty = 1 + (int) (Math.random() * 10);
-        else if (u < 0.75) qty = 11 + (int) (Math.random() * 40);
-        else if (u < 0.93) qty = 51 + (int) (Math.random() * 150);
-        else if (u < 0.98) qty = 201 + (int) (Math.random() * 300);
-        else qty = 500 + (int) (Math.random() * 500);
+        if (u < 0.45) qty = 1 + (int) (RANDOM.nextDouble() * 10);
+        else if (u < 0.75) qty = 11 + (int) (RANDOM.nextDouble() * 40);
+        else if (u < 0.93) qty = 51 + (int) (RANDOM.nextDouble() * 150);
+        else if (u < 0.98) qty = 201 + (int) (RANDOM.nextDouble() * 300);
+        else qty = 500 + (int) (RANDOM.nextDouble() * 500);
         return new BigDecimal(qty);
     }
 
@@ -422,7 +424,7 @@ public class LVWRChaosSimulator implements Runnable {
         private BigDecimal lastPrice;
         private final BigDecimal volatility;
         private BigDecimal cumVol = BigDecimal.ZERO;
-        private final Random rng = new Random();
+        private final SecureRandom rng = new SecureRandom();
 
         /** Per-instrument sequence counter. Starts at 0; nextSeqNum() returns 1 on first call. */
         private long seqNum = 0;
