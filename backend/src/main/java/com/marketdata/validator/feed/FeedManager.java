@@ -67,7 +67,7 @@ public class FeedManager {
             for (Connection conn : saved) {
                 if (conn.getAdapterType() == Connection.AdapterType.LVWR_T) {
                     simulatorConnections.put(conn.getId(), conn);
-                    log.info("Loaded saved LVWR_T connection: {} ({})", conn.getName(), conn.getId());
+                    log.info("Loaded saved LVWR_T connection");
                     startConnection(conn.getId(), new ScenarioConfig());
                 } else {
                     FeedAdapter adapter = createAdapter(conn.getAdapterType());
@@ -75,9 +75,9 @@ public class FeedManager {
                     feedConn.addTickListener(this::broadcastTick);
                     wireReconnectionCallbacks(feedConn, conn.getId());
                     connections.put(conn.getId(), feedConn);
-                    log.info("Loaded saved connection: {} ({})", conn.getName(), conn.getId());
+                    log.info("Loaded saved connection");
                     feedConn.connect();
-                    log.info("Auto-connected: {}", conn.getName());
+                    log.info("Auto-connected saved connection");
                 }
             }
             if (!saved.isEmpty()) {
@@ -96,7 +96,7 @@ public class FeedManager {
             }
             simulatorConnections.put(connection.getId(), connection);
             connectionStore.save(connection);
-            log.info("Added LVWR_T connection: {} ({})", connection.getName(), connection.getId());
+            log.info("Added LVWR_T connection");
             return connection;
         }
         FeedAdapter adapter = createAdapter(connection.getAdapterType());
@@ -105,7 +105,7 @@ public class FeedManager {
         wireReconnectionCallbacks(feedConn, connection.getId());
         connections.put(connection.getId(), feedConn);
         connectionStore.save(connection);
-        log.info("Added connection: {} ({})", connection.getName(), connection.getId());
+        log.info("Added connection");
         return connection;
     }
 
@@ -119,7 +119,8 @@ public class FeedManager {
             LVWRChaosSimulator sim = simulators.remove(connectionId);
             if (sim != null) sim.stop();
             connectionStore.delete(connectionId);
-            log.info("Removed LVWR_T connection: {}", connectionId);
+            // Avoid logging user-controlled data directly
+            log.info("Removed LVWR_T connection");
             return true;
         }
         FeedConnection feedConn = connections.remove(connectionId);
@@ -130,7 +131,8 @@ public class FeedManager {
             feedConn.disconnect();
         }
         connectionStore.delete(connectionId);
-        log.info("Removed connection: {}", connectionId);
+        // Avoid logging user-controlled data directly
+        log.info("Removed connection");
         return true;
     }
 
@@ -158,7 +160,8 @@ public class FeedManager {
                 existing.stop();
                 try {
                     if (!existing.waitForStop(10_000)) {
-                        log.warn("Old simulator for {} did not stop within 10s — proceeding anyway", connectionId);
+                        // Avoid logging user-controlled data directly
+                        log.warn("Old simulator did not stop within 10s  proceeding anyway");
                     }
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
@@ -169,7 +172,8 @@ public class FeedManager {
             Thread.ofVirtual().name("lvwr-simulator-" + connectionId).start(sim);
             simConn.setStatus(Connection.Status.CONNECTED);
             simConn.setConnectedAt(Instant.now());
-            log.info("Started LVWR_T simulator for connection: {}", connectionId);
+            // Avoid logging user-controlled data directly
+            log.info("Started LVWR_T simulator for connection");
             return true;
         }
 
@@ -192,7 +196,8 @@ public class FeedManager {
             LVWRChaosSimulator sim = simulators.remove(connectionId);
             if (sim != null) sim.stop();
             simConn.setStatus(Connection.Status.DISCONNECTED);
-            log.info("Stopped LVWR_T simulator for connection: {}", connectionId);
+            // Avoid logging user-controlled data directly
+            log.info("Stopped LVWR_T simulator for connection");
             return true;
         }
 
@@ -297,8 +302,7 @@ public class FeedManager {
             try {
                 fc.disconnect();
             } catch (Exception e) {
-                log.error("Failed to disconnect feed {}: {}",
-                        fc.getConnection().getName(), e.getMessage());
+                log.error("Failed to disconnect feed: {}", e.getMessage());
             }
         });
     }
