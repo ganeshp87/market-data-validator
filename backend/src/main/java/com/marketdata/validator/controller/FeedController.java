@@ -9,8 +9,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.net.InetAddress;
-import java.net.InetSocketAddress;
-import java.net.Socket;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
@@ -32,6 +30,8 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/feeds")
 public class FeedController {
+
+    private static final String ERROR_KEY = "error";
 
     private final FeedManager feedManager;
     private final ValidatorEngine validatorEngine;
@@ -56,7 +56,7 @@ public class FeedController {
      * adapterType from edge-case JSON deserialization).
      */
     @PostMapping
-    public ResponseEntity<?> addFeed(@RequestBody Connection connection) {
+    public ResponseEntity<Object> addFeed(@RequestBody Connection connection) {
         boolean isLvwr = Connection.AdapterType.LVWR_T.equals(connection.getAdapterType())
                 || (connection.getUrl() != null && connection.getUrl().startsWith("lvwr://"));
 
@@ -64,7 +64,7 @@ public class FeedController {
             String validationError = validateFeedUrl(connection.getUrl());
             if (validationError != null) {
                 return ResponseEntity.badRequest()
-                        .body(Map.of("error", validationError));
+                        .body(Map.of(ERROR_KEY, validationError));
             }
         } else {
             connection.setAdapterType(Connection.AdapterType.LVWR_T);
@@ -80,7 +80,7 @@ public class FeedController {
      * Connection must be stopped before updating URL.
      */
     @PutMapping("/{id}")
-    public ResponseEntity<?> updateFeed(@PathVariable String id,
+    public ResponseEntity<Object> updateFeed(@PathVariable String id,
                                         @RequestBody Connection update) {
         Connection existing = feedManager.getConnection(id);
         if (existing == null) {
@@ -91,12 +91,12 @@ public class FeedController {
             if (existing.getStatus() == Connection.Status.CONNECTED
                     || existing.getStatus() == Connection.Status.RECONNECTING) {
                 return ResponseEntity.badRequest()
-                        .body(Map.of("error", "Stop connection before changing URL"));
+                        .body(Map.of(ERROR_KEY, "Stop connection before changing URL"));
             }
             String validationError = validateFeedUrl(update.getUrl());
             if (validationError != null) {
                 return ResponseEntity.badRequest()
-                        .body(Map.of("error", validationError));
+                        .body(Map.of(ERROR_KEY, validationError));
             }
             existing.setUrl(update.getUrl());
         }
@@ -132,7 +132,7 @@ public class FeedController {
      * For LVWR_T connections, an optional SimulatorConfig body configures the simulator.
      */
     @PostMapping("/{id}/start")
-    public ResponseEntity<?> startFeed(@PathVariable String id,
+    public ResponseEntity<Object> startFeed(@PathVariable String id,
                                        @RequestBody(required = false) ScenarioConfig simulatorConfig) {
         Connection conn = feedManager.getConnection(id);
         if (conn == null) {
@@ -141,7 +141,7 @@ public class FeedController {
         boolean started = feedManager.startConnection(id, simulatorConfig);
         if (!started) {
             return ResponseEntity.badRequest()
-                    .body(Map.of("error", "Connection already active or failed to start"));
+                    .body(Map.of(ERROR_KEY, "Connection already active or failed to start"));
         }
         return ResponseEntity.ok(conn);
     }
@@ -150,7 +150,7 @@ public class FeedController {
      * Stop a feed connection (close WebSocket).
      */
     @PostMapping("/{id}/stop")
-    public ResponseEntity<?> stopFeed(@PathVariable String id) {
+    public ResponseEntity<Object> stopFeed(@PathVariable String id) {
         Connection conn = feedManager.getConnection(id);
         if (conn == null) {
             return ResponseEntity.notFound().build();
@@ -158,7 +158,7 @@ public class FeedController {
         boolean stopped = feedManager.stopConnection(id);
         if (!stopped) {
             return ResponseEntity.badRequest()
-                    .body(Map.of("error", "Connection already stopped"));
+                    .body(Map.of(ERROR_KEY, "Connection already stopped"));
         }
         return ResponseEntity.ok(conn);
     }
@@ -167,7 +167,7 @@ public class FeedController {
      * Subscribe to additional symbols on an existing connection.
      */
     @PostMapping("/{id}/subscribe")
-    public ResponseEntity<?> subscribe(@PathVariable String id,
+    public ResponseEntity<Object> subscribe(@PathVariable String id,
                                        @RequestBody Map<String, List<String>> body) {
         Connection conn = feedManager.getConnection(id);
         if (conn == null) {
@@ -176,7 +176,7 @@ public class FeedController {
         List<String> symbols = body.get("symbols");
         if (symbols == null || symbols.isEmpty()) {
             return ResponseEntity.badRequest()
-                    .body(Map.of("error", "Request must include 'symbols' array"));
+                    .body(Map.of(ERROR_KEY, "Request must include 'symbols' array"));
         }
 
         List<String> current = new ArrayList<>(conn.getSymbols());
@@ -193,7 +193,7 @@ public class FeedController {
      * Unsubscribe from symbols on an existing connection.
      */
     @PostMapping("/{id}/unsubscribe")
-    public ResponseEntity<?> unsubscribe(@PathVariable String id,
+    public ResponseEntity<Object> unsubscribe(@PathVariable String id,
                                          @RequestBody Map<String, List<String>> body) {
         Connection conn = feedManager.getConnection(id);
         if (conn == null) {
@@ -202,7 +202,7 @@ public class FeedController {
         List<String> symbols = body.get("symbols");
         if (symbols == null || symbols.isEmpty()) {
             return ResponseEntity.badRequest()
-                    .body(Map.of("error", "Request must include 'symbols' array"));
+                    .body(Map.of(ERROR_KEY, "Request must include 'symbols' array"));
         }
 
         List<String> current = new ArrayList<>(conn.getSymbols());

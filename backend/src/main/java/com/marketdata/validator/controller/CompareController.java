@@ -30,6 +30,8 @@ import java.util.stream.Collectors;
 @RequestMapping("/api/compare")
 public class CompareController {
 
+    private static final String ERROR_KEY = "error";
+
     private final SessionStore sessionStore;
     private final TickStore tickStore;
 
@@ -43,17 +45,17 @@ public class CompareController {
      * Body: { "sessionIdA": 1, "sessionIdB": 2 }
      */
     @PostMapping
-    public ResponseEntity<?> compareSessions(@RequestBody Map<String, Long> body) {
+    public ResponseEntity<Object> compareSessions(@RequestBody Map<String, Long> body) {
         Long idA = body.get("sessionIdA");
         Long idB = body.get("sessionIdB");
 
         if (idA == null || idB == null) {
             return ResponseEntity.badRequest()
-                    .body(Map.of("error", "Both 'sessionIdA' and 'sessionIdB' are required"));
+                    .body(Map.of(ERROR_KEY, "Both 'sessionIdA' and 'sessionIdB' are required"));
         }
         if (idA.equals(idB)) {
             return ResponseEntity.badRequest()
-                    .body(Map.of("error", "Cannot compare a session with itself"));
+                    .body(Map.of(ERROR_KEY, "Cannot compare a session with itself"));
         }
 
         Optional<Session> sessionA = sessionStore.findById(idA);
@@ -61,11 +63,11 @@ public class CompareController {
 
         if (sessionA.isEmpty()) {
             return ResponseEntity.badRequest()
-                    .body(Map.of("error", "Session A not found: " + idA));
+                    .body(Map.of(ERROR_KEY, "Session A not found: " + idA));
         }
         if (sessionB.isEmpty()) {
             return ResponseEntity.badRequest()
-                    .body(Map.of("error", "Session B not found: " + idB));
+                    .body(Map.of(ERROR_KEY, "Session B not found: " + idB));
         }
 
         List<Tick> ticksA = tickStore.findBySessionId(idA);
@@ -235,6 +237,6 @@ public class CompareController {
     private long percentile(long[] sorted, int p) {
         if (sorted.length == 0) return 0;
         int index = (int) Math.ceil((p / 100.0) * sorted.length) - 1;
-        return sorted[Math.max(0, Math.min(index, sorted.length - 1))];
+        return sorted[Math.clamp(index, 0, sorted.length - 1)];
     }
 }

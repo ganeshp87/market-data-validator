@@ -61,66 +61,72 @@ public class AccuracyValidator implements Validator {
 
     @Override
     public void onTick(Tick tick) {
-        // Idempotent: skip already-processed sequence numbers
         Long lastSeq = lastSequenceBySymbol.get(tick.getSymbol());
         if (lastSeq != null && tick.getSequenceNum() <= lastSeq) {
             return;
         }
 
         totalTicks.incrementAndGet();
-        boolean isValid = true;
-
-        // Rule 1: Price must be positive
-        if (tick.getPrice() == null || tick.getPrice().compareTo(BigDecimal.ZERO) <= 0) {
-            invalidPriceCount.incrementAndGet();
-            isValid = false;
-            log.debug("Invalid price: {} for symbol={} seq={}",
-                    tick.getPrice(), tick.getSymbol(), tick.getSequenceNum());
-        }
-
-        // Rule 2: Bid <= Ask (if both present)
-        if (tick.getBid() != null && tick.getAsk() != null
-                && tick.getBid().compareTo(tick.getAsk()) > 0) {
-            bidAskViolations.incrementAndGet();
-            isValid = false;
-        }
-
-        // Rule 3: Large move detection (> 10% change from previous tick for same symbol)
-        if (tick.getPrice() != null && tick.getPrice().compareTo(BigDecimal.ZERO) > 0) {
-            BigDecimal prevPrice = lastPriceBySymbol.get(tick.getSymbol());
-
-            // If the feed was down for longer than reconnectGapMs, treat this tick as a
-            // new baseline rather than comparing against a stale pre-disconnect price.
-            Instant lastTime = lastTickTimeBySymbol.get(tick.getSymbol());
-            if (prevPrice != null && lastTime != null && tick.getReceivedTimestamp() != null) {
-                long gapMs = Duration.between(lastTime, tick.getReceivedTimestamp()).toMillis();
-                if (gapMs >= reconnectGapMs.get()) {
-                    prevPrice = null; // skip spike detection — treat as new baseline
-                }
-            }
-
-            if (prevPrice != null && prevPrice.compareTo(BigDecimal.ZERO) > 0) {
-                BigDecimal change = tick.getPrice().subtract(prevPrice).abs();
-                BigDecimal percentChange = change.divide(prevPrice, MathContext.DECIMAL64);
-                if (percentChange.compareTo(largeMovePercent) > 0) {
-                    largeMoveCount.incrementAndGet();
-                    isValid = false;
-                    log.debug("Large move: {} → {} ({}%) for symbol={}",
-                            prevPrice, tick.getPrice(), percentChange, tick.getSymbol());
-                }
-            }
-            lastPriceBySymbol.put(tick.getSymbol(), tick.getPrice());
-        }
+        boolean isValid = validatePrice(tick) && validateBidAsk(tick) && validateNoLargeMove(tick);
 
         if (tick.getReceivedTimestamp() != null) {
             lastTickTimeBySymbol.put(tick.getSymbol(), tick.getReceivedTimestamp());
         }
-
         if (isValid) {
             validTicks.incrementAndGet();
         }
-
         lastSequenceBySymbol.put(tick.getSymbol(), tick.getSequenceNum());
+    }
+
+    private boolean validatePrice(Tick tick) {
+        if (tick.getPrice() == null || tick.getPrice().compareTo(BigDecimal.ZERO) <= 0) {
+            invalidPriceCount.incrementAndGet();
+            log.debug("Invalid price: {} for symbol={} seq={}",
+                    tick.getPrice(), tick.getSymbol(), tick.getSequenceNum());
+            return false;
+        }
+        return true;
+    }
+
+    private boolean validateBidAsk(Tick tick) {
+        if (tick.getBid() != null && tick.getAsk() != null
+                && tick.getBid().compareTo(tick.getAsk()) > 0) {
+            bidAskViolations.incrementAndGet();
+            return false;
+        }
+        return true;
+    }
+
+    private boolean validateNoLargeMove(Tick tick) {
+        if (tick.getPrice() == null || tick.getPrice().compareTo(BigDecimal.ZERO) <= 0) {
+            return true;
+        }
+        BigDecimal prevPrice = effectivePrevPrice(tick);
+        lastPriceBySymbol.put(tick.getSymbol(), tick.getPrice());
+        if (prevPrice == null || prevPrice.compareTo(BigDecimal.ZERO) <= 0) {
+            return true;
+        }
+        BigDecimal percentChange = tick.getPrice().subtract(prevPrice).abs()
+                .divide(prevPrice, MathContext.DECIMAL64);
+        if (percentChange.compareTo(largeMovePercent) > 0) {
+            largeMoveCount.incrementAndGet();
+            log.debug("Large move: {} → {} ({}%) for symbol={}",
+                    prevPrice, tick.getPrice(), percentChange, tick.getSymbol());
+            return false;
+        }
+        return true;
+    }
+
+    private BigDecimal effectivePrevPrice(Tick tick) {
+        BigDecimal prevPrice = lastPriceBySymbol.get(tick.getSymbol());
+        if (prevPrice == null) return null;
+        // If the feed was down longer than reconnectGapMs, treat this as a new baseline.
+        Instant lastTime = lastTickTimeBySymbol.get(tick.getSymbol());
+        if (lastTime != null && tick.getReceivedTimestamp() != null) {
+            long gapMs = Duration.between(lastTime, tick.getReceivedTimestamp()).toMillis();
+            if (gapMs >= reconnectGapMs.get()) return null;
+        }
+        return prevPrice;
     }
 
     @Override
