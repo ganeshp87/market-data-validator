@@ -2,7 +2,7 @@
 
 > **Audience:** Beginner QA tester. No prior knowledge of this project is assumed.
 > **Purpose:** Step-by-step instructions to verify every feature works correctly.
-> **Last Updated:** April 2026
+> **Last Updated:** April 2026 (Round 3 — SonarCloud maintainability refactor, security hardening, code-quality regressions added)
 
 ---
 
@@ -34,7 +34,7 @@
 10. [Validation Configuration Tests](#10-validation-configuration-tests)
 11. [Error Handling Tests](#11-error-handling-tests)
 12. [Advanced / Stress Tests](#12-advanced--stress-tests)
-13. [Regression Tests](#13-regression-tests)
+13. [Regression Tests](#13-regression-tests) *(REG-01 – REG-10)*
 14. [API Quick Reference](#14-api-quick-reference)
 15. [UI Manual Testing Guide](#15-ui-manual-testing-guide)
     - [Getting Started With the UI](#151-getting-started-with-the-ui)
@@ -2567,6 +2567,190 @@ cd backend && ./mvnw -Dtest=SessionRecorderFlushFailureTest test 2>&1 | tail -5
 
 ---
 
+### TEST REG-07: AccuracyValidator Must Detect All Three Violation Types After Method Extraction
+
+**What was changed:** `AccuracyValidator.onTick()` was refactored — the inline price, bid/ask, and large-move checks were extracted into three private methods (`validatePrice`, `validateBidAsk`, `validateNoLargeMove`). This regression test confirms all three violation counters still increment correctly.
+
+**Test:**
+
+1. Reset validators:
+```bash
+curl -s -X POST http://localhost:8082/api/validation/reset
+```
+
+2. Start the simulator in SCENARIO mode with `NEGATIVE_PRICE` to trigger invalid price:
+```bash
+curl -s -X PUT "http://localhost:8082/api/simulator/config?connectionId=$LVWR_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"SCENARIO","targetScenario":"NEGATIVE_PRICE","failureRate":0.5,"ticksPerSecond":50}'
+```
+
+3. Wait 10 seconds, then check ACCURACY details:
+```bash
+curl -s http://localhost:8082/api/validation/summary | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+a = d['results'].get('ACCURACY', {})
+details = a.get('details', {})
+print('Status:            ', a.get('status'))
+print('invalidPriceCount: ', details.get('invalidPriceCount'))
+print('bidAskViolations:  ', details.get('bidAskViolations'))
+print('largeMoveCount:    ', details.get('largeMoveCount'))
+"
+```
+
+4. Reset and repeat with `PRICE_SPIKE` scenario to trigger large-move and bid/ask violations.
+
+**Expected Result (PASS):**
+- [ ] After `NEGATIVE_PRICE` scenario: `invalidPriceCount` is greater than 0
+- [ ] After `PRICE_SPIKE` scenario: `largeMoveCount` is greater than 0
+- [ ] ACCURACY card shows WARN or FAIL (not PASS) during either scenario
+
+**Failure Result (FAIL — regression detected):**
+- All violation counters remain 0 → One or more `validate*` methods is not being called. Check `AccuracyValidator.onTick()` short-circuit chain.
+
+---
+
+### TEST REG-08: SubscriptionValidator Must Track Subscribe Latency After Refactor
+
+**What was changed:** `SubscriptionValidator.getResult()` (complexity 21) was split into four private methods: `countActiveSymbols`, `countTimedOutSubscriptions`, `deriveStatus`, `buildMessage`. The `computeIfAbsent` pattern now records subscribe latency on first tick. This test confirms subscribe latency is still captured.
+
+**Test:**
+
+1. Reset validators and stop the simulator.
+2. Subscribe to a symbol (subscribe event starts the timer):
+```bash
+curl -s -X POST "http://localhost:8082/api/feeds/$LVWR_ID/subscribe" \
+  -H "Content-Type: application/json" \
+  -d '{"symbols":["BTCUSDT"]}'
+```
+3. Start the simulator:
+```bash
+curl -s -X POST "http://localhost:8082/api/feeds/$LVWR_ID/start"
+```
+4. Wait 5 seconds, then check SUBSCRIPTION details:
+```bash
+curl -s http://localhost:8082/api/validation/summary | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+s = d['results'].get('SUBSCRIPTION', {})
+details = s.get('details', {})
+print('Status:          ', s.get('status'))
+print('subscribedCount: ', details.get('subscribedCount'))
+print('activeCount:     ', details.get('activeCount'))
+print('subscribeEvents: ', details.get('subscribeEvents'))
+"
+```
+
+**Expected Result (PASS):**
+- [ ] `subscribeEvents` is greater than 0
+- [ ] `activeCount` equals `subscribedCount`
+- [ ] SUBSCRIPTION status is PASS
+
+**Failure Result (FAIL — regression detected):**
+- `activeCount` is 0 after ticks are flowing → `countActiveSymbols` is not counting correctly. Check `SubscriptionValidator`.
+- `subscribeEvents` is 0 → `onSubscribe()` is not being called.
+
+---
+
+### TEST REG-09: LVWRChaosSimulator Must Emit All Failure Types After emitTick Refactor
+
+**What was changed:** The `LVWRChaosSimulator` tick-emission logic was extracted into `emitTick(InstrumentState, FailureType)` using a switch expression. An always-true null check (`if (tick != null)`) was removed from the non-failure path, and the unused `instrId` parameter was removed from `buildTick`. This test verifies all failure modes still fire.
+
+**Test:**
+
+For each scenario listed below, reset validators and run for 15 seconds, then check `failureCounts`:
+
+```bash
+for SCENARIO in DISCONNECT RECONNECT_STORM PRICE_SPIKE SEQUENCE_GAP STALE_TIMESTAMP; do
+  echo "=== Testing scenario: $SCENARIO ==="
+  curl -s -X POST http://localhost:8082/api/validation/reset > /dev/null
+  curl -s -X PUT "http://localhost:8082/api/simulator/config?connectionId=$LVWR_ID" \
+    -H "Content-Type: application/json" \
+    -d "{\"mode\":\"SCENARIO\",\"targetScenario\":\"$SCENARIO\",\"failureRate\":0.8,\"ticksPerSecond\":50}" > /dev/null
+  sleep 10
+  STATUS=$(curl -s "http://localhost:8082/api/simulator/status?connectionId=$LVWR_ID" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+counts = d.get('failureCountsByType', {})
+print('failureCounts:', counts.get('$SCENARIO', 0))
+print('ticksSent:', d.get('ticksSent', 0))
+")
+  echo "$STATUS"
+  echo ""
+done
+```
+
+**Expected Result (PASS):**
+- [ ] For each scenario: `failureCounts[SCENARIO]` is greater than 0 after 10 seconds
+- [ ] `ticksSent` is greater than 0 for every scenario
+- [ ] No 500 error or NullPointerException in server logs
+
+**Failure Result (FAIL — regression detected):**
+- `failureCounts` is 0 for a scenario → The switch expression in `emitTick` is missing a case or has a fall-through error.
+- Server logs show `NullPointerException` in `LVWRChaosSimulator.emitTick` → The null check removal introduced a regression.
+
+---
+
+### TEST REG-10: SessionReplayer Pause/Resume/Stop Must Work After Method Extraction
+
+**What was changed:** `SessionReplayer.replayLoop()` (complexity 21) was split into `checkAndWaitIfPaused()`, `processTickWithTiming()`, and `sleepForGap()`. The loop now uses a single `break` instead of multiple `continue`/`break` paths. This test confirms that pause, resume, and stop still work correctly.
+
+**Prerequisites:** A completed session with at least 200 ticks (see Session Recording Tests for how to create one).
+
+**Test:**
+
+1. Start replay at slow speed:
+```bash
+REPLAY_SESSION_ID=1  # replace with a real session ID
+curl -s -X POST "http://localhost:8082/api/sessions/$REPLAY_SESSION_ID/replay?speed=0.5" &
+```
+
+2. Wait 3 seconds, then pause:
+```bash
+curl -s -X POST http://localhost:8082/api/sessions/replay/pause | python3 -m json.tool
+```
+
+3. Wait 5 seconds. Verify that `ticksReplayed` is frozen (not increasing):
+```bash
+sleep 5
+curl -s http://localhost:8082/api/sessions/replay/status | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print('state:', d.get('state'))
+print('ticksReplayed:', d.get('ticksReplayed'))
+"
+```
+
+4. Resume:
+```bash
+curl -s -X POST http://localhost:8082/api/sessions/replay/resume | python3 -m json.tool
+```
+
+5. Verify `ticksReplayed` is increasing again (check twice, 2 seconds apart):
+```bash
+T1=$(curl -s http://localhost:8082/api/sessions/replay/status | python3 -c "import sys,json; print(json.load(sys.stdin).get('ticksReplayed'))")
+sleep 2
+T2=$(curl -s http://localhost:8082/api/sessions/replay/status | python3 -c "import sys,json; print(json.load(sys.stdin).get('ticksReplayed'))")
+echo "ticksReplayed before: $T1, after: $T2"
+```
+
+6. Stop replay:
+```bash
+curl -s -X POST http://localhost:8082/api/sessions/replay/stop
+```
+
+**Expected Result (PASS):**
+- [ ] After pause: state is `PAUSED` and `ticksReplayed` does not change over 5 seconds
+- [ ] After resume: state returns to `REPLAYING` and `ticksReplayed` increases (T2 > T1)
+- [ ] After stop: state is `IDLE`
+
+**Failure Result (FAIL — regression detected):**
+- Replay does not pause (ticks keep flowing) → `checkAndWaitIfPaused()` `pauseLock.wait()` is not being reached.
+- After resume, replay stays frozen → `pauseLock.notifyAll()` is not being called.
+
+---
+
 ### TEST REG-06: COMPLETENESS Stale Hysteresis — No False Recovery
 
 **What was broken:** A symbol that became stale would immediately recover after receiving just one tick, causing oscillation (FAIL → PASS → FAIL → PASS every few seconds).
@@ -3582,6 +3766,10 @@ Use this checklist to track progress through a full test run:
 
 ### Regression
 - [ ] REG-01 through REG-06
+- [ ] REG-07: AccuracyValidator detects all 3 violation types after method extraction
+- [ ] REG-08: SubscriptionValidator tracks subscribe latency after computeIfAbsent refactor
+- [ ] REG-09: LVWRChaosSimulator emits all failure types after emitTick switch refactor
+- [ ] REG-10: SessionReplayer pause/resume/stop work after replayLoop method extraction
 
 ### UI Manual Testing (Section 15)
 

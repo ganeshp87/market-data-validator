@@ -4,10 +4,10 @@
 > **Stack:** Java 21 LTS, Spring Boot 3.3.0, React 18 + Vite 5, SQLite, Docker
 > **Package:** `com.marketdata.validator`
 > **Port:** 8082
-> **Status:** COMPLETE — 788 tests passing (603 backend + 185 frontend), Phase 1 hardening applied + hardening tests + E2E verified
-> **Last Updated:** March 2026
+> **Status:** COMPLETE — 959 tests passing (774 backend + 185 frontend), Phase 1 hardening applied + hardening tests + E2E verified
+> **Last Updated:** April 2026
 
-> **Note:** This system evolved beyond the initial blueprint scope with production-grade enhancements including automatic alert generation, co-located component tests, batch tick parsing, session replay state machines, rolling file logging, and a live unacknowledged-alert badge. A Phase 1 production hardening pass added graceful shutdown lifecycle, reconnect race protection, backpressure concurrency guards, SQLite WAL mode, batch transaction safety, and flush error containment. A follow-up hardening-test pass added 14 targeted behavioral tests (CAS race proof, flush failure containment, destroy resilience, concurrent overflow invariant) and 2 minimal production changes for testability. A final E2E verification pass discovered and fixed a SessionRecorder wiring bug (ticks were never routed to the recorder) and a BackpressureQueue TOCTOU race condition. All additions follow the same design principles (bounded buffers, structured logging, O(1)-per-tick processing) documented throughout. A subsequent fix addressed negative latency caused by clock skew between local machine and exchange NTP-synced servers — `getLatencyMs()` now clamps to zero, and `LatencyValidator` uses the clamped value, with 5 regression tests added. A further enhancement added **clock offset estimation** in `FeedConnection`: the first 20 ticks calibrate the clock skew between local and exchange time, then all subsequent ticks are adjusted so the dashboard displays real network latency (typically 5–50ms) instead of 0ms, with 6 tests covering calibration, correction accuracy, reset, and null safety.
+> **Note:** This system evolved beyond the initial blueprint scope with production-grade enhancements including automatic alert generation, co-located component tests, batch tick parsing, session replay state machines, rolling file logging, and a live unacknowledged-alert badge. A Phase 1 production hardening pass added graceful shutdown lifecycle, reconnect race protection, backpressure concurrency guards, SQLite WAL mode, batch transaction safety, and flush error containment. A follow-up hardening-test pass added 14 targeted behavioral tests (CAS race proof, flush failure containment, destroy resilience, concurrent overflow invariant) and 2 minimal production changes for testability. A final E2E verification pass discovered and fixed a SessionRecorder wiring bug (ticks were never routed to the recorder) and a BackpressureQueue TOCTOU race condition. All additions follow the same design principles (bounded buffers, structured logging, O(1)-per-tick processing) documented throughout. A subsequent fix addressed negative latency caused by clock skew between local machine and exchange NTP-synced servers — `getLatencyMs()` now clamps to zero, and `LatencyValidator` uses the clamped value, with 5 regression tests added. A further enhancement added **clock offset estimation** in `FeedConnection`: the first 20 ticks calibrate the clock skew between local and exchange time, then all subsequent ticks are adjusted so the dashboard displays real network latency (typically 5–50ms) instead of 0ms, with 6 tests covering calibration, correction accuracy, reset, and null safety. Subsequently, a full **LVWR_T Chaos Simulator** was added — a built-in fake feed that injects 12 named failure types (SEQUENCE_GAP, PRICE_SPIKE, DISCONNECT, RECONNECT_STORM, etc.) across CLEAN/NOISY/CHAOS/SCENARIO modes — together with a **SimulatorController** and a **ComplianceController** exposing 6 MiFID-II compliance checks (ART 27, ART 64, ART 65, RTS 22, Audit Trail, OHLC). Three new validator support classes were added: `FieldCompletenessValidator` (pre-validation field gate), `SourceValidator` (feed-source integrity), and `ConfigUtils` (shared config parsing). Frontend gained `SimulatorPanel`, `CompliancePanel`, and `ValidatorSummary` components. A SonarCloud maintainability pass resolved 28 issues across 8 files (cognitive complexity reductions via method extraction, duplicate-literal constants, `Math.clamp()`, `computeIfAbsent`, `ResponseEntity<Object>` over wildcards). A security hardening pass replaced `Math.random()/Random` with `SecureRandom` and removed user-controlled data from log statements.
 
 ---
 
@@ -56,9 +56,9 @@ Exchange WebSocket -> FeedAdapter -> FeedConnection -> FeedManager -> Backpressu
 | Metric | Value |
 |--------|-------|
 | Validators | 8 (Accuracy, Latency, Completeness, Ordering, Throughput, Reconnection, Subscription, Stateful) |
-| Backend Tests | 597 (JUnit 5 + Mockito + AssertJ) |
+| Backend Tests | 774 (JUnit 5 + Mockito + AssertJ) |
 | Frontend Tests | 185 (Vitest + React Testing Library) |
-| API Endpoints | 33 across 7 controllers |
+| API Endpoints | 37 across 9 controllers |
 | Database Tables | 5 (connections, sessions, ticks, validations, alerts) |
 | Memory Budget | < 5 MB for 1000 symbols |
 | Target Throughput | 10K+ ticks/sec |
@@ -102,7 +102,7 @@ public class Tick {
 
 ```java
 public class Connection {
-    public enum AdapterType { BINANCE, FINNHUB, GENERIC }
+    public enum AdapterType { BINANCE, FINNHUB, GENERIC, LVWR_T }
     public enum Status { CONNECTED, DISCONNECTED, RECONNECTING, ERROR }
 
     private String id;                // UUID, auto-generated
@@ -313,9 +313,12 @@ market-data-validator/
 |       |       |
 |       |       +-- validator/
 |       |       |   +-- Validator.java               # Interface: onTick, getResult, reset, configure
-|       |       |   +-- ValidatorEngine.java         # Orchestrator: fan-out, structured logging
+|       |       |   +-- ValidatorEngine.java         # Orchestrator: fan-out, field gate, structured logging
 |       |       |   +-- BackpressureQueue.java       # Bounded queue, DROP_OLDEST/DROP_NEWEST
 |       |       |   +-- AlertGenerator.java           # Auto-generates alerts from FAIL/WARN results
+|       |       |   +-- ConfigUtils.java             # Shared config-value type conversion (toLong, toDouble)
+|       |       |   +-- FieldCompletenessValidator.java  # Pre-validation gate: rejects ticks missing required fields
+|       |       |   +-- SourceValidator.java         # Feed-source integrity: validates feedId/symbol consistency
 |       |       |   +-- AccuracyValidator.java       # Price validation, bid<=ask, spike detection
 |       |       |   +-- LatencyValidator.java        # p50/p95/p99 with sliding window
 |       |       |   +-- CompletenessValidator.java   # Sequence gap detection per symbol
@@ -327,12 +330,14 @@ market-data-validator/
 |       |       |
 |       |       +-- controller/
 |       |       |   +-- FeedController.java          # Feed CRUD + SSRF prevention
-|       |       |   +-- ValidationController.java    # Summary, history, config, reset
+|       |       |   +-- ValidationController.java    # Summary, history, config, reset, feeds
 |       |       |   +-- SessionController.java       # Record, replay, export (delegates to SessionExporter)
 |       |       |   +-- StreamController.java        # SSE: ticks, validations, latency, throughput, alerts
 |       |       |   +-- AlertController.java         # Alert CRUD + acknowledge
 |       |       |   +-- CompareController.java       # Compare two sessions (5 dimensions)
 |       |       |   +-- MetricsController.java       # GET /api/metrics (JSON, Prometheus-ready)
+|       |       |   +-- SimulatorController.java     # Simulator mode/config, scenarios, live status
+|       |       |   +-- ComplianceController.java    # GET /api/compliance — MiFID-II 6 checks
 |       |       |
 |       |       +-- store/
 |       |       |   +-- TickStore.java               # JdbcTemplate CRUD for ticks table
@@ -344,6 +349,14 @@ market-data-validator/
 |       |       |   +-- SessionRecorder.java         # Start/stop recording, batch inserts (100 ticks)
 |       |       |   +-- SessionReplayer.java         # Replay with timing gaps, speed control
 |       |       |   +-- SessionExporter.java         # Export as JSON map or CSV string
+|       |       |
+|       |       +-- simulator/
+|       |       |   +-- SimulatorMode.java           # Enum: CLEAN, NOISY, CHAOS, SCENARIO
+|       |       |   +-- FailureType.java             # Enum: 12 failure types (SEQUENCE_GAP, PRICE_SPIKE, ...)
+|       |       |   +-- ScenarioConfig.java          # Runtime config: mode, targetScenario, failureRate, ticksPerSecond
+|       |       |   +-- ScenarioEngine.java          # Selects failure type per tick based on mode + failureRate
+|       |       |   +-- LVWRChaosSimulator.java      # Tick emitter: runs in thread, injects failures via emitTick()
+|       |       |   +-- LVWRSimulatorAdapter.java    # FeedAdapter impl for LVWR_T — bridges simulator to FeedConnection
 |       |       |
 |       |       +-- config/
 |       |           +-- SqliteConfig.java            # Ensures data/ dir + runs schema.sql on startup
@@ -375,7 +388,17 @@ market-data-validator/
 |               |   +-- SubscriptionValidatorTest.java
 |               |   +-- StatefulValidatorTest.java
 |               |   +-- ValidatorEngineTest.java
+|               |   +-- ValidatorEngineFieldGateTest.java  # FieldCompletenessValidator pre-gate integration
 |               |   +-- BackpressureQueueTest.java
+|               |   +-- AlertGeneratorTest.java
+|               |   +-- ConfigUtilsTest.java
+|               |   +-- FieldCompletenessValidatorTest.java
+|               |   +-- SourceValidatorTest.java
+|               |   +-- ManualClock.java                  # Test helper: injectable Clock for time-dependent tests
+|               +-- simulator/
+|               |   +-- LVWRChaosSimulatorTest.java
+|               |   +-- ScenarioEngineTest.java
+|               |   +-- SimulatorValidatorIntegrationTest.java
 |               +-- session/
 |               |   +-- SessionRecorderTest.java
 |               |   +-- SessionReplayerTest.java
@@ -392,6 +415,8 @@ market-data-validator/
 |                   +-- AlertControllerTest.java
 |                   +-- CompareControllerTest.java
 |                   +-- MetricsControllerTest.java
+|                   +-- SimulatorControllerTest.java
+|                   +-- ComplianceControllerTest.java
 |
 +-- frontend/
     +-- package.json                         # React 18, Vite, Vitest
@@ -407,11 +432,14 @@ market-data-validator/
         |   +-- ConnectionManager.jsx        # Add/start/stop feeds
         |   +-- LiveTickFeed.jsx             # Real-time tick table with auto-scroll
         |   +-- ValidationDashboard.jsx      # 8 cards with color-coded status
+        |   +-- ValidatorSummary.jsx         # Compact per-validator status row/badge
         |   +-- LatencyChart.jsx             # Live p50/p95/p99 visualization
         |   +-- ThroughputGauge.jsx          # Throughput meter
         |   +-- SessionManager.jsx           # Record/replay/export/compare
         |   +-- AlertPanel.jsx               # Alert list with acknowledge
         |   +-- StatusBar.jsx                # Connection/throughput status
+        |   +-- SimulatorPanel.jsx           # LVWR_T chaos simulator controls (mode, scenario, apply)
+        |   +-- CompliancePanel.jsx          # MiFID-II compliance check results (6 checks)
         |   +-- AlertPanel.test.jsx          # Co-located: 22 AlertPanel tests
         |   +-- SessionManager.test.jsx      # Co-located: 33 SessionManager tests
         |
@@ -462,6 +490,7 @@ Methods: getSubscribeMessage(symbols), getUnsubscribeMessage(symbols),
 | `BinanceAdapter` | Binance (crypto) | `{"e":"trade","s":"BTCUSDT","p":"45123.45","q":"0.123","T":ms,"t":seqnum}` |
 | `FinnhubAdapter` | Finnhub (stocks) | `{"type":"trade","data":[{"s":"AAPL","p":178.50,"v":100,"t":ms},...]}` |
 | `GenericAdapter` | Custom feeds | Configurable field mapping via constructor `Map<String,String>` |
+| `LVWRSimulatorAdapter` | Built-in simulator | Bridges `LVWRChaosSimulator` to the `FeedAdapter` interface; no real WebSocket |
 
 **BinanceAdapter**  parses Binance `@trade` stream messages. Assigns `correlationId` (UUID) at parse time. Returns `null` for heartbeat/non-trade messages.
 
@@ -521,19 +550,36 @@ void configure(Map<String, Object> config);
 - If an alert is acknowledged/deleted while failure persists, a new alert is re-created
 - Clears stale alerts from previous server runs on startup
 
-### 5.4 controller/  REST API Layer (7 Controllers)
+**FieldCompletenessValidator**  Pre-validation field gate (runs before the 8 main validators):
+- Rejects ticks where `symbol`, `feedId`, or `exchangeTimestamp` is null/blank, `sequenceNum < 0`, or `price` is null
+- Rejected ticks are counted and surfaced in validator details but do not flow to the 8 validators
+- Prevents NullPointerExceptions in downstream validators from malformed payloads
+
+**SourceValidator**  Feed-source integrity check:
+- Validates that each tick's `feedId` maps to a known active connection
+- Detects ticks arriving from unknown or disconnected feeds
+- Works alongside `FieldCompletenessValidator` as an early-stage gate
+
+**ConfigUtils**  Shared configuration utility:
+- Static helpers `toLong(Object, long)` and `toDouble(Object, double)` used by all 8 validators in their `configure()` methods
+- Centralises type-coercion logic (numeric string → primitive) so validators don't duplicate it
+- Eliminates the `instanceof`/cast pattern previously repeated across every validator's configure block
+
+### 5.4 controller/  REST API Layer (9 Controllers)
 
 | Controller | Base Path | Responsibilities |
 |-----------|-----------|-----------------|
 | `FeedController` | `/api/feeds` | Feed CRUD, start/stop, subscribe/unsubscribe, SSRF validation |
-| `ValidationController` | `/api/validation` | Summary, history, config update, reset |
+| `ValidationController` | `/api/validation` | Summary, history, config update, reset, feed scope list |
 | `SessionController` | `/api/sessions` | Start/stop recording, export (JSON/CSV), replay, delete |
 | `StreamController` | `/api/stream` | SSE endpoints for live ticks, validation, latency, throughput, alerts; `@PreDestroy` shuts down the stats scheduler |
 | `AlertController` | `/api/alerts` | Alert CRUD, acknowledge, bulk operations |
 | `CompareController` | `/api/compare` | Compare two sessions across 5 dimensions |
 | `MetricsController` | `/api/metrics` | System metrics JSON (tick counts, pass rates, queue stats) |
+| `SimulatorController` | `/api/simulator` | List scenarios, get live simulator status, update mode/config |
+| `ComplianceController` | `/api/compliance` | MiFID-II 6-check compliance report (ART 27/64/65, RTS 22, Audit Trail, OHLC) |
 
-**Security:** `FeedController.validateFeedUrl()` prevents SSRF by blocking loopback, site-local, link-local, and wildcard addresses via `InetAddress` resolution. Only `ws://` and `wss://` schemes allowed.
+**Security:** `FeedController.validateFeedUrl()` prevents SSRF by blocking loopback, site-local, link-local, and wildcard addresses via `InetAddress` resolution. Only `ws://` and `wss://` schemes allowed. All controllers use `ResponseEntity<Object>` (not wildcard `ResponseEntity<?>`) and define constants for repeated string literals (`ERROR_KEY`, `UNKNOWN`) to avoid SonarCloud duplicate-literal issues.
 
 ### 5.5 store/  Persistence Layer
 
@@ -556,7 +602,52 @@ SQLite constraint: `maximum-pool-size=1` (single writer). `TickStore.saveBatch()
 | `SessionReplayer` | Replays ticks with original timing gaps; speed control (1x, 2x, 5x); feeds into ValidatorEngine; state machine: `IDLE -> REPLAYING -> COMPLETED/FAILED`, with `PAUSED` reachable from `REPLAYING` |
 | `SessionExporter` | `exportAsJson(session, ticks)` -> Map; `exportAsCsv(ticks)` -> String with headers |
 
-### 5.7 config/  Application Configuration
+### 5.7 simulator/  LVWR_T Chaos Simulator
+
+The built-in simulator generates synthetic market data ticks and can inject 12 named failure types for validator testing. It is fully wired as a `FeedAdapter` (`LVWR_T` adapter type) so it is treated identically to a real exchange connection by `FeedManager`.
+
+**SimulatorMode** — 4 operating modes:
+| Mode | Behavior |
+|------|----------|
+| `CLEAN` | 100% normal ticks; all 8 validators stay PASS |
+| `NOISY` | 90% normal + 10% random failures across all 12 types |
+| `CHAOS` | 50% normal + 50% random failures (aggressive stress test) |
+| `SCENARIO` | Only the configured `targetScenario` fires; all others stay at zero |
+
+**FailureType** — 12 named failure injections:
+| FailureType | Validator Targeted |
+|-------------|-------------------|
+| `SEQUENCE_GAP` | CompletenessValidator |
+| `DUPLICATE_TICK` | OrderingValidator |
+| `OUT_OF_ORDER` | OrderingValidator |
+| `STALE_TIMESTAMP` | LatencyValidator |
+| `MALFORMED_PAYLOAD` | CompletenessValidator |
+| `SYMBOL_MISMATCH` | StatefulValidator |
+| `NEGATIVE_PRICE` | AccuracyValidator |
+| `PRICE_SPIKE` | AccuracyValidator |
+| `DISCONNECT` | ThroughputValidator |
+| `RECONNECT_STORM` | ReconnectionValidator |
+| `THROTTLE_BURST` | ThroughputValidator / BackpressureQueue |
+| `CUMVOL_BACKWARD` | StatefulValidator |
+
+**ScenarioConfig** — runtime config updated via `PUT /api/simulator/config`:
+- `mode`: `CLEAN | NOISY | CHAOS | SCENARIO`
+- `targetScenario`: which `FailureType` to use in SCENARIO mode
+- `failureRate`: 0.0–1.0 (proportion of ticks that carry a failure)
+- `ticksPerSecond`: throughput throttle (default: 50)
+- `disconnectDurationMs`: how long DISCONNECT pauses emission (default: 8000)
+- `reconnectPauseDurationMs`: brief pause per RECONNECT_STORM event (default: 500)
+
+**LVWRChaosSimulator**  Tick emitter running in a dedicated background thread:
+- Emits ticks for a configurable set of instruments (bonds, equities, FX) with realistic price drift
+- `emitTick(InstrumentState, FailureType)` dispatches via switch expression to the correct failure handler
+- Tracks per-failure-type counters (`failureCountsByType`) and `ticksSent` for live status reporting
+- Uses `SecureRandom` for all random number generation
+- StructuredArguments logging on key events keyed by `feedId`
+
+**ScenarioEngine**  Stateless helper that chooses a `FailureType` (or `null` for clean) for each tick given the current `ScenarioConfig`.
+
+### 5.8 config/  Application Configuration
 
 `SqliteConfig`  Ensures the `data/` directory exists and runs `schema.sql` on startup via a `CommandLineRunner` bean. After schema initialization, applies production safety PRAGMAs: `journal_mode = WAL` (write-ahead logging for concurrent read/write safety) and `busy_timeout = 5000` (5-second wait on lock contention instead of immediate `SQLITE_BUSY` failure). DataSource and JdbcTemplate are auto-configured by Spring Boot from `application.properties`.
 
@@ -577,15 +668,18 @@ SQLite constraint: `maximum-pool-size=1` (single writer). `TickStore.saveBatch()
 
 | Component | Purpose | Key Features |
 |-----------|---------|-------------|
-| `App.jsx` | Root layout | Tab navigation between views; polls `/api/alerts/count` every 3s for unacknowledged alert badge |
+| `App.jsx` | Root layout | Tab navigation (8 tabs); polls `/api/alerts/count` every 3s for unacknowledged alert badge |
 | `ConnectionManager.jsx` | Feed management | Add/edit/start/stop feeds; shows status indicators |
 | `LiveTickFeed.jsx` | Tick display | Real-time table with auto-scroll, pause, symbol filter |
-| `ValidationDashboard.jsx` | 8-area overview | Color-coded cards (green/yellow/red); click to expand |
+| `ValidationDashboard.jsx` | 8-area overview | Color-coded cards (green/yellow/red); click to expand; feed scope dropdown |
+| `ValidatorSummary.jsx` | Compact validator row | Single-line status badge per validator area |
 | `LatencyChart.jsx` | Latency visualization | Live p50/p95/p99 with threshold line |
 | `ThroughputGauge.jsx` | Throughput meter | Current msg/sec with rolling average |
 | `SessionManager.jsx` | Session management | Record/stop/replay/export/compare sessions |
 | `AlertPanel.jsx` | Alert notifications | List with severity colors; acknowledge/dismiss |
 | `StatusBar.jsx` | Connection status | Connected count, throughput, overall health |
+| `SimulatorPanel.jsx` | Chaos simulator UI | Mode selector (CLEAN/NOISY/CHAOS/SCENARIO), scenario dropdown, config apply; live stats |
+| `CompliancePanel.jsx` | MiFID-II compliance | 6-check panel with PASS/WARN/FAIL badges mapping to ART 27/64/65, RTS 22, Audit Trail, OHLC |
 
 ### Data Flow (Frontend)
 
@@ -689,7 +783,7 @@ CREATE TABLE IF NOT EXISTS alerts (
 | POST | `/api/feeds/{id}/subscribe` | Subscribe to additional symbols |
 | POST | `/api/feeds/{id}/unsubscribe` | Unsubscribe from symbols |
 
-### Validation  ValidationController (4 endpoints)
+### Validation  ValidationController (5 endpoints)
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -697,6 +791,7 @@ CREATE TABLE IF NOT EXISTS alerts (
 | GET | `/api/validation/history` | Ordered list of all current results |
 | PUT | `/api/validation/config` | Update thresholds (global or per-area) |
 | POST | `/api/validation/reset` | Reset all validator state |
+| GET | `/api/validation/feeds` | List of feed IDs for the validation scope dropdown |
 
 ### Sessions  SessionController (7 endpoints)
 
@@ -739,6 +834,54 @@ CREATE TABLE IF NOT EXISTS alerts (
 | POST | `/api/compare` | Compare two sessions (body: sessionIdA, sessionIdB) |
 
 Returns 5 comparison dimensions: price differences, volume differences, sequence gaps, latency patterns, missing symbols.
+
+### Simulator  SimulatorController (3 endpoints)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/simulator/scenarios` | List all 12 `FailureType` names + descriptions |
+| GET | `/api/simulator/status` | Live simulator stats (`ticksSent`, `failureCountsByType`, `mode`, `ticksPerSecond`) |
+| PUT | `/api/simulator/config` | Update simulator mode/scenario/failureRate/ticksPerSecond |
+
+`PUT /api/simulator/config` accepts `?connectionId=<uuid>` query param and a `ScenarioConfig` body:
+```json
+{
+  "mode": "CLEAN | NOISY | CHAOS | SCENARIO",
+  "targetScenario": "SEQUENCE_GAP | PRICE_SPIKE | ...",
+  "failureRate": 0.1,
+  "ticksPerSecond": 50,
+  "disconnectDurationMs": 8000,
+  "reconnectPauseDurationMs": 500
+}
+```
+
+### Compliance  ComplianceController (1 endpoint)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/compliance` | MiFID-II compliance report — 6 checks derived from live validator results |
+
+Returns:
+```json
+{
+  "timestamp": "ISO-8601",
+  "art27TimestampAccuracy": "PASS | WARN | FAIL | UNKNOWN",
+  "art64PreTradeTransparency": "PASS | WARN | FAIL | UNKNOWN",
+  "art65PostTradeReporting": "PASS | WARN | FAIL | UNKNOWN",
+  "rts22TradeIdUniqueness": "PASS | WARN | FAIL | UNKNOWN",
+  "auditTrailCompleteness": "PASS | WARN | FAIL | UNKNOWN",
+  "ohlcReconciliation": "PASS | WARN | FAIL | UNKNOWN"
+}
+```
+
+| Field | Derived From | PASS Condition |
+|-------|-------------|----------------|
+| `art27TimestampAccuracy` | LATENCY p95 | p95 < 100ms |
+| `art64PreTradeTransparency` | ACCURACY status | ACCURACY = PASS |
+| `art65PostTradeReporting` | COMPLETENESS gapEventCount | gapEventCount == 0 |
+| `rts22TradeIdUniqueness` | ORDERING violations | No duplicate seqNum violations |
+| `auditTrailCompleteness` | COMPLETENESS rate | completenessRate ≥ 99.99% |
+| `ohlcReconciliation` | STATEFUL status | STATEFUL = PASS |
 
 ### Metrics  MetricsController (1 endpoint)
 
@@ -911,7 +1054,7 @@ Thresholds: PASS rate >= 99.99% AND no stale symbols
 
 ## 10. Test Suite
 
-### Backend  597 Tests (JUnit 5 + Mockito + AssertJ)
+### Backend  774 Tests (JUnit 5 + Mockito + AssertJ)
 
 | Package | Test Class | Count | What It Covers |
 |---------|-----------|-------|----------------|
@@ -923,24 +1066,32 @@ Thresholds: PASS rate >= 99.99% AND no stale symbols
 | feed | FinnhubAdapterTest | 15 | Trade arrays, empty data, ping, multi-trade |
 | feed | GenericAdapterTest | 17 | Default mappings, custom fields, heartbeat types |
 | feed | FeedConnectionTest | 27 | Backoff calculation, connect/disconnect, reconnect CAS guard (double/triple/concurrent `handleDisconnect`, intentional-disconnect precedence — CyclicBarrier 10-thread proof), clock offset estimation (calibration, correction accuracy, reset, null timestamps, positive/negative skew) |
-| feed | FeedManagerTest | 22 | CRUD, health check, adapter creation for all 3 types, `destroy()` per-connection exception isolation (one-throws, all-throw, empty-map edge cases via reflection-injected mocks) |
-| validator | AccuracyValidatorTest | 22 | Negative price, bid>ask, spikes, accuracy rate |
+| feed | FeedManagerTest | 22 | CRUD, health check, adapter creation for all 4 types (incl. LVWR_T), `destroy()` per-connection exception isolation |
+| validator | AccuracyValidatorTest | 22 | Negative price, bid>ask, spikes, accuracy rate; extracted validatePrice/validateBidAsk/validateNoLargeMove methods |
 | validator | LatencyValidatorTest | 25 | Percentiles, sliding window, threshold transitions, negative latency clock-skew clamping, mixed normal+skew ticks |
 | validator | CompletenessValidatorTest | 25 | Gaps, multi-symbol, stale, massive gaps |
 | validator | OrderingValidatorTest | 17 | Timestamp order, bid/ask, volume |
 | validator | ThroughputValidatorTest | 27 | Rate, drops, zero throughput, rolling average |
 | validator | ReconnectionValidatorTest | 18 | Events, timing, subscription restoration |
-| validator | SubscriptionValidatorTest | 25 | Subscribe/unsub, leaky, latency tracking |
+| validator | SubscriptionValidatorTest | 25 | Subscribe/unsub, leaky, latency tracking; computeIfAbsent for first-tick latency |
 | validator | StatefulValidatorTest | 38 | VWAP, OHLC, cumVol, stale, high-precision, 100-symbol |
 | validator | ValidatorEngineTest | 25 | Fan-out, reset, null tick, 8-validator wiring, burst |
+| validator | ValidatorEngineFieldGateTest | - | FieldCompletenessValidator pre-gate integration: rejects null symbol/feedId/ts/price, passes valid ticks |
 | validator | BackpressureQueueTest | 23 | DROP_OLDEST/NEWEST, concurrent overflow metric consistency (CyclicBarrier + CountDownLatch — no sleep-based timing), shutdown, metrics |
+| validator | AlertGeneratorTest | - | Alert generation on FAIL/WARN, 10s throttle, re-alert after acknowledge |
+| validator | ConfigUtilsTest | - | toLong/toDouble type coercion, null handling, invalid input fallback |
+| validator | FieldCompletenessValidatorTest | - | Reject null symbol, blank feedId, null exchangeTimestamp, negative seqNum, null price |
+| validator | SourceValidatorTest | - | Unknown feedId detection, known feed pass-through |
 | session | SessionRecorderTest | 18 | Start/stop, batch, tick count, flush buffer behavior, destroy lifecycle |
 | session | SessionRecorderFlushFailureTest | 7 | Mock-based flush failure containment: pipeline stability on DB error, buffer discard-to-prevent-retry-storm, continued recording after failure, tickCount metadata divergence (pinned as known limitation), session completion after prior flush failure, `@PreDestroy` flush + failure containment |
-| session | SessionReplayerTest | 35 | Timing, speed control, single-tick, stop-when-idle |
+| session | SessionReplayerTest | 35 | Timing, speed control, single-tick, stop-when-idle; pause/resume/stop via extracted methods |
 | session | SessionExporterTest | 7 | JSON metadata, CSV headers, precision, null fields |
 | store | TickStoreTest | 12 | CRUD, batch, query by session |
 | store | SessionStoreTest | 12 | CRUD, status update, find |
 | store | AlertStoreTest | 17 | CRUD, acknowledge, bulk ops |
+| simulator | LVWRChaosSimulatorTest | - | All 12 failure types fire, failureCountsByType increments, clean mode baseline |
+| simulator | ScenarioEngineTest | - | Mode-based failure selection: CLEAN returns null, CHAOS/NOISY use failureRate, SCENARIO returns targetScenario |
+| simulator | SimulatorValidatorIntegrationTest | - | Full wiring: simulator → validators → expected FAIL states per failure type |
 | controller | FeedControllerTest | - | SSRF: loopback, private IP, link-local, empty URL |
 | controller | ValidationControllerTest | - | Summary, config, reset |
 | controller | SessionControllerTest | - | Record, export (JSON/CSV via exporter mock), replay |
@@ -948,6 +1099,8 @@ Thresholds: PASS rate >= 99.99% AND no stale symbols
 | controller | AlertControllerTest | - | CRUD, acknowledge, bulk |
 | controller | CompareControllerTest | - | 5-dimension comparison, edge cases |
 | controller | MetricsControllerTest | 7 | Tick count, pass rate, queue/feed metrics |
+| controller | SimulatorControllerTest | - | Scenarios list, status, config update; unknown connectionId 404 |
+| controller | ComplianceControllerTest | - | All 6 MiFID-II fields, PASS/FAIL derivation, no-data UNKNOWN state |
 
 ### Frontend  185 Tests (Vitest + React Testing Library)
 
@@ -1253,8 +1406,8 @@ A follow-up test pass added 14 tests (4 reconnect CAS, 7 flush failure, 3 destro
 
 ## End of Blueprint
 
-This document reflects the exact state of the codebase as of the Phase 1 final commit.
+This document reflects the state of the codebase as of April 2026 (post-simulator, post-compliance, post-SonarCloud maintainability pass).
 Every class, endpoint, test, and configuration described above exists and works.
-788 tests pass (603 backend + 185 frontend).
+959 tests pass (774 backend + 185 frontend).
 
 Phase 1 production hardening has been applied and E2E verified against live Binance WebSocket feeds. A follow-up hardening-test pass added 14 targeted behavioral tests and 2 minimal production changes (package-visible `handleDisconnect()`, per-connection try-catch in `destroy()`). An E2E verification pass discovered and fixed 4 real bugs: Mockito SPI misconfiguration, SpringBootTest+MockBean NullBean interaction, BackpressureQueue TOCTOU race, and SessionRecorder missing FeedManager wiring. See Section 15 for details and known caveats.
