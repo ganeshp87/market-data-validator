@@ -6,8 +6,6 @@ import com.marketdata.validator.model.ValidationResult;
 import com.marketdata.validator.store.SessionStore;
 import com.marketdata.validator.store.TickStore;
 import com.marketdata.validator.validator.ValidatorEngine;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -24,7 +22,6 @@ import java.util.function.Consumer;
 @Component
 public class SessionReplayer {
 
-    private static final Logger log = LoggerFactory.getLogger(SessionReplayer.class);
     private static final double MAX_REPLAY_SPEED = 1000.0;
 
     public enum State { IDLE, REPLAYING, PAUSED, COMPLETED, FAILED }
@@ -140,35 +137,11 @@ public class SessionReplayer {
     private void replayLoop(List<Tick> ticks) {
         try {
             Instant prevTs = null;
-
             for (Tick tick : ticks) {
-                if (state == State.IDLE) break;
-
-                synchronized (pauseLock) {
-                    while (state == State.PAUSED) {
-                        pauseLock.wait();
-                    }
-                }
-                if (state == State.IDLE) break;
-
-                // Respect inter-tick timing scaled by speed factor
-                if (prevTs != null && tick.getExchangeTimestamp() != null) {
-                    long gapMs = Duration.between(prevTs, tick.getExchangeTimestamp()).toMillis();
-                    if (gapMs > 0) {
-                        long sleepMs = (long) (gapMs / speedFactor);
-                        if (sleepMs > 0) {
-                            Thread.sleep(sleepMs);
-                        }
-                    }
-                }
-
-                engine.onTick(tick);
-                ticksReplayed.incrementAndGet();
-                prevTs = tick.getExchangeTimestamp();
-
+                if (!checkAndWaitIfPaused()) break;
+                prevTs = processTickWithTiming(tick, prevTs);
                 notifyProgress();
             }
-
             if (state == State.REPLAYING) {
                 state = State.COMPLETED;
                 notifyProgress();
@@ -177,6 +150,34 @@ public class SessionReplayer {
             Thread.currentThread().interrupt();
             if (state != State.IDLE) {
                 state = State.FAILED;
+            }
+        }
+    }
+
+    private boolean checkAndWaitIfPaused() throws InterruptedException {
+        if (state == State.IDLE) return false;
+        synchronized (pauseLock) {
+            while (state == State.PAUSED) {
+                pauseLock.wait();
+            }
+        }
+        return state != State.IDLE;
+    }
+
+    private Instant processTickWithTiming(Tick tick, Instant prevTs) throws InterruptedException {
+        sleepForGap(prevTs, tick);
+        engine.onTick(tick);
+        ticksReplayed.incrementAndGet();
+        return tick.getExchangeTimestamp();
+    }
+
+    private void sleepForGap(Instant prevTs, Tick tick) throws InterruptedException {
+        if (prevTs == null || tick.getExchangeTimestamp() == null) return;
+        long gapMs = Duration.between(prevTs, tick.getExchangeTimestamp()).toMillis();
+        if (gapMs > 0) {
+            long sleepMs = (long) (gapMs / speedFactor);
+            if (sleepMs > 0) {
+                Thread.sleep(sleepMs);
             }
         }
     }

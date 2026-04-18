@@ -29,6 +29,7 @@ import java.util.Map;
 public class ComplianceController {
 
     private static final long ART27_LATENCY_THRESHOLD_MS = 100;
+    private static final String UNKNOWN = "UNKNOWN";
 
     private final ValidatorEngine validatorEngine;
 
@@ -70,7 +71,7 @@ public class ComplianceController {
 
     /** ART 27: timestamp accuracy PASS when p95 latency < 100ms */
     private String deriveArt27(ValidationResult latency) {
-        if (latency == null) return "UNKNOWN";
+        if (latency == null) return UNKNOWN;
         Object p95raw = latency.getDetails() != null ? latency.getDetails().get("p95") : null;
         if (p95raw instanceof Number p95) {
             return p95.longValue() < ART27_LATENCY_THRESHOLD_MS ? "PASS" : "FAIL";
@@ -80,7 +81,7 @@ public class ComplianceController {
 
     /** ART 65: post-trade reporting PASS when there are 0 gap events */
     private String deriveArt65(ValidationResult completeness) {
-        if (completeness == null) return "UNKNOWN";
+        if (completeness == null) return UNKNOWN;
         Object gaps = completeness.getDetails() != null ? completeness.getDetails().get("gapEventCount") : null;
         if (gaps instanceof Number gapNum) {
             return gapNum.longValue() == 0 ? "PASS" : "FAIL";
@@ -90,7 +91,7 @@ public class ComplianceController {
 
     /** RTS 22: trade ID uniqueness PASS when no duplicate ordering violations */
     private String deriveRts22(ValidationResult ordering) {
-        if (ordering == null) return "UNKNOWN";
+        if (ordering == null) return UNKNOWN;
         Object dups = ordering.getDetails() != null ? ordering.getDetails().get("duplicateCount") : null;
         if (dups instanceof Number dupNum) {
             return dupNum.longValue() == 0 ? "PASS" : "FAIL";
@@ -100,7 +101,7 @@ public class ComplianceController {
 
     /** Audit Trail: PASS when completeness rate ≥ 99.99% */
     private String deriveAuditTrail(ValidationResult completeness) {
-        if (completeness == null) return "UNKNOWN";
+        if (completeness == null) return UNKNOWN;
         Object rateRaw = completeness.getDetails() != null ? completeness.getDetails().get("completenessRate") : null;
         if (rateRaw instanceof Number rate) {
             double r = rate.doubleValue();
@@ -112,11 +113,11 @@ public class ComplianceController {
     }
 
     private String deriveStatus(ValidationResult result) {
-        if (result == null) return "UNKNOWN";
+        if (result == null) return UNKNOWN;
         return statusName(result.getStatus());
     }
 
     private String statusName(ValidationResult.Status status) {
-        return status == null ? "UNKNOWN" : status.name();
+        return status == null ? UNKNOWN : status.name();
     }
 }

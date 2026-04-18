@@ -10,7 +10,6 @@ import org.springframework.stereotype.Component;
 
 import jakarta.annotation.PostConstruct;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -38,7 +37,6 @@ public class AlertGenerator {
     private final AtomicLong lastCheckTime = new AtomicLong(0);
     // Areas that already have an unacknowledged alert — refreshed periodically
     private final AtomicReference<Set<String>> coveredAreas = new AtomicReference<>(ConcurrentHashMap.newKeySet());
-    private volatile boolean initialized = false;
 
     public AlertGenerator(ValidatorEngine engine, AlertStore alertStore) {
         this.engine = engine;
@@ -75,7 +73,7 @@ public class AlertGenerator {
             try {
                 coveredAreas.set(alertStore.findUnacknowledged().stream()
                         .map(Alert::getArea)
-                        .collect(Collectors.toCollection(() -> ConcurrentHashMap.newKeySet())));
+                        .collect(Collectors.toCollection(ConcurrentHashMap::newKeySet)));
             } catch (Exception e) {
                 lastCheckTime.set(lastCheck); // reset timer — retry on next call
                 log.warn("Failed to refresh covered alert areas: {}", e.getMessage());
@@ -83,27 +81,17 @@ public class AlertGenerator {
         }
 
         for (ValidationResult result : results) {
-            if (result.getStatus() == ValidationResult.Status.PASS) {
-                continue;
-            }
-
             String areaName = result.getArea().name();
-
-            // Skip if an unacknowledged alert already exists for this area
-            if (coveredAreas.get().contains(areaName)) {
-                continue;
+            if (result.getStatus() != ValidationResult.Status.PASS && !coveredAreas.get().contains(areaName)) {
+                Severity severity = result.getStatus() == ValidationResult.Status.FAIL
+                        ? Severity.CRITICAL : Severity.WARN;
+                String message = String.format("%s validation %s — value: %.2f, threshold: %.2f",
+                        areaName, result.getStatus(), result.getMetric(), result.getThreshold());
+                Alert alert = new Alert(areaName, severity, message);
+                alertStore.save(alert);
+                coveredAreas.get().add(areaName);
+                log.info("Alert generated: [{}] {} — {}", severity, areaName, message);
             }
-
-            Severity severity = result.getStatus() == ValidationResult.Status.FAIL
-                    ? Severity.CRITICAL : Severity.WARN;
-
-            String message = String.format("%s validation %s — value: %.2f, threshold: %.2f",
-                    areaName, result.getStatus(), result.getMetric(), result.getThreshold());
-
-            Alert alert = new Alert(areaName, severity, message);
-            alertStore.save(alert);
-            coveredAreas.get().add(areaName); // mark as covered immediately
-            log.info("Alert generated: [{}] {} — {}", severity, areaName, message);
         }
     }
 }

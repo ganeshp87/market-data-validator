@@ -43,6 +43,8 @@ public class LVWRChaosSimulator implements Runnable {
     private static final Logger log = LoggerFactory.getLogger(LVWRChaosSimulator.class);
     private static final MathContext MC = new MathContext(8, RoundingMode.HALF_UP);
     private static final SecureRandom RANDOM = new SecureRandom();
+    private static final String KEY_FEED_ID = "feedId";
+    private static final String DEFAULT_BOND_VOLATILITY = "0.002";
 
     // Deterministic emission order — blueprint-specified
     static final int[] EMISSION_ORDER = {126, 1, 2, 26, 20, 55, 8, 12, 54, 13, 14, 16, 19, 78, 9, 24, 23, 17};
@@ -94,7 +96,7 @@ public class LVWRChaosSimulator implements Runnable {
         scenarioEngine.reset();
 
         log.info("LVWR_T simulator starting {} {} {}",
-                StructuredArguments.keyValue("feedId", feedId),
+                StructuredArguments.keyValue(KEY_FEED_ID, feedId),
                 StructuredArguments.keyValue("mode", config.get().getMode()),
                 StructuredArguments.keyValue("ticksPerSecond", config.get().getTicksPerSecond()));
 
@@ -120,30 +122,8 @@ public class LVWRChaosSimulator implements Runnable {
                 FailureType failure = scenarioEngine.decide(config.get());
 
                 // Generate the tick (or handle special failure modes)
-                if (failure == FailureType.DISCONNECT) {
-                    handleDisconnect();
-                    tradeCount++;
-                    ticksSent.incrementAndGet();
-                    failureCountsByType.get(FailureType.DISCONNECT.name()).incrementAndGet();
-                } else if (failure == FailureType.RECONNECT_STORM) {
-                    handleReconnectStorm();
-                    tradeCount++;
-                    ticksSent.incrementAndGet();
-                    failureCountsByType.get(FailureType.RECONNECT_STORM.name()).incrementAndGet();
-                } else if (failure == FailureType.THROTTLE_BURST) {
-                    handleThrottleBurst(state);
-                    tradeCount++;
-                    failureCountsByType.get(FailureType.THROTTLE_BURST.name()).incrementAndGet();
-                } else {
-                    Tick tick = buildTick(state, instrId, failure);
-                    // Count the failure even when the tick is null (e.g. MALFORMED_PAYLOAD)
-                    if (failure != null) failureCountsByType.get(failure.name()).incrementAndGet();
-                    if (tick != null) {
-                        tickConsumer.accept(tick);
-                        ticksSent.incrementAndGet();
-                    }
-                    tradeCount++;
-                }
+                emitTick(state, instrId, failure);
+                tradeCount++;
 
                 // Deadline-based pacing — stable throughput regardless of processing jitter
                 nextDeadlineNs += intervalNanos;
@@ -158,7 +138,7 @@ public class LVWRChaosSimulator implements Runnable {
             running.set(false);
             stoppedLatch.countDown();
             log.info("LVWR_T simulator stopped {} {} {}",
-                    StructuredArguments.keyValue("feedId", feedId),
+                    StructuredArguments.keyValue(KEY_FEED_ID, feedId),
                     StructuredArguments.keyValue("ticksSent", ticksSent.get()),
                     StructuredArguments.keyValue("totalFailures", getTotalFailuresInjected()));
         }
@@ -223,6 +203,43 @@ public class LVWRChaosSimulator implements Runnable {
 
     public ScenarioConfig getConfig() {
         return config.get();
+    }
+
+    // --- Failure dispatch ---
+
+    private void emitTick(InstrumentState state, int instrId, FailureType failure) throws InterruptedException {
+        if (failure == null) {
+            Tick tick = buildTick(state, instrId, null);
+            if (tick != null) {
+                tickConsumer.accept(tick);
+                ticksSent.incrementAndGet();
+            }
+            return;
+        }
+        switch (failure) {
+            case DISCONNECT -> {
+                handleDisconnect();
+                ticksSent.incrementAndGet();
+                failureCountsByType.get(failure.name()).incrementAndGet();
+            }
+            case RECONNECT_STORM -> {
+                handleReconnectStorm();
+                ticksSent.incrementAndGet();
+                failureCountsByType.get(failure.name()).incrementAndGet();
+            }
+            case THROTTLE_BURST -> {
+                handleThrottleBurst(state);
+                failureCountsByType.get(failure.name()).incrementAndGet();
+            }
+            default -> {
+                Tick tick = buildTick(state, instrId, failure);
+                failureCountsByType.get(failure.name()).incrementAndGet();
+                if (tick != null) {
+                    tickConsumer.accept(tick);
+                    ticksSent.incrementAndGet();
+                }
+            }
+        }
     }
 
     // --- Internal tick construction ---
@@ -316,7 +333,7 @@ public class LVWRChaosSimulator implements Runnable {
 
     private void handleDisconnect() throws InterruptedException {
         log.info("LVWR_T injecting DISCONNECT {}",
-                StructuredArguments.keyValue("feedId", feedId));
+                StructuredArguments.keyValue(KEY_FEED_ID, feedId));
         // Pause emission for configured duration — ThroughputValidator will detect the drop
         Thread.sleep(config.get().getDisconnectDurationMs());
     }
@@ -330,7 +347,7 @@ public class LVWRChaosSimulator implements Runnable {
         disconnectCount++;
 
         log.info("LVWR_T injecting RECONNECT_STORM {} {}",
-                StructuredArguments.keyValue("feedId", feedId),
+                StructuredArguments.keyValue(KEY_FEED_ID, feedId),
                 StructuredArguments.keyValue("disconnectCount", disconnectCount));
 
         Thread.sleep(config.get().getReconnectPauseDurationMs()); // brief pause per reconnect event
@@ -390,16 +407,16 @@ public class LVWRChaosSimulator implements Runnable {
         addInstrument(9,   "EUR/GBP",     "0.8550", "0.0004");
         addInstrument(12,  "XAU/USD",     "20.25",  "0.003");
         addInstrument(13,  "LIBOR_ON",    "5.320",  "0.0002");
-        addInstrument(14,  "EURIBOR_3M",  "3.875",  "0.002");
-        addInstrument(16,  "UK_GILT_10Y", "4.225",  "0.002");
-        addInstrument(17,  "US_TSY_10Y",  "4.325",  "0.002");
-        addInstrument(19,  "DE_BUND_10Y", "2.325",  "0.002");
-        addInstrument(20,  "FR_OAT_10Y",  "2.975",  "0.002");
+        addInstrument(14,  "EURIBOR_3M",  "3.875",  DEFAULT_BOND_VOLATILITY);
+        addInstrument(16,  "UK_GILT_10Y", "4.225",  DEFAULT_BOND_VOLATILITY);
+        addInstrument(17,  "US_TSY_10Y",  "4.325",  DEFAULT_BOND_VOLATILITY);
+        addInstrument(19,  "DE_BUND_10Y", "2.325",  DEFAULT_BOND_VOLATILITY);
+        addInstrument(20,  "FR_OAT_10Y",  "2.975",  DEFAULT_BOND_VOLATILITY);
         addInstrument(23,  "IT_BTP_10Y",  "3.675",  "0.003");
         addInstrument(24,  "JP_JGB_10Y",  "1.350",  "0.001");
-        addInstrument(26,  "SP_BONO_10Y", "3.125",  "0.002");
-        addInstrument(54,  "US_TSY_2Y",   "4.750",  "0.002");
-        addInstrument(55,  "US_TSY_30Y",  "4.575",  "0.002");
+        addInstrument(26,  "SP_BONO_10Y", "3.125",  DEFAULT_BOND_VOLATILITY);
+        addInstrument(54,  "US_TSY_2Y",   "4.750",  DEFAULT_BOND_VOLATILITY);
+        addInstrument(55,  "US_TSY_30Y",  "4.575",  DEFAULT_BOND_VOLATILITY);
         addInstrument(78,  "CHF_LIBOR_3M","1.425",  "0.0002");
         addInstrument(126, "AGGR_INDEX",  "100.00", "0.001");
     }
