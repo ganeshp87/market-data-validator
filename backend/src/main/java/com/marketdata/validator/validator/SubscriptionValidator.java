@@ -101,10 +101,12 @@ public class SubscriptionValidator implements Validator {
 
         // Record subscribe latency: time from subscribe event to first tick
         Instant subTime = subscribeTimeBySymbol.get(symbol);
-        if (subTime != null && !subscribeLatencyMs.containsKey(symbol)) {
-            long latency = Duration.between(subTime, now).toMillis();
-            subscribeLatencyMs.put(symbol, latency);
-            log.debug("Subscribe latency for {}: {}ms", symbol, latency);
+        if (subTime != null) {
+            subscribeLatencyMs.computeIfAbsent(symbol, k -> {
+                long latency = Duration.between(subTime, now).toMillis();
+                log.debug("Subscribe latency for {}: {}ms", symbol, latency);
+                return latency;
+            });
         }
 
         // Leaky unsubscribe detection: tick arriving after unsubscribe
@@ -148,59 +150,21 @@ public class SubscriptionValidator implements Validator {
 
     @Override
     public ValidationResult getResult() {
-        int subscribed = subscribedSymbols.size();
-        int active = 0;
         Instant now = clock.instant();
-
-        // Count currently active symbols (within threshold)
-        for (String symbol : subscribedSymbols) {
-            Instant lastTick = lastTickTimeBySymbol.get(symbol);
-            if (lastTick != null && Duration.between(lastTick, now).toMillis() < activeThresholdMs) {
-                active++;
-            }
-        }
-
-        // Check for timed-out subscriptions (subscribed but no tick within timeout)
-        int timedOut = 0;
-        for (String symbol : subscribedSymbols) {
-            Instant subTime = subscribeTimeBySymbol.get(symbol);
-            if (subTime != null && !subscribeLatencyMs.containsKey(symbol)) {
-                long waitMs = Duration.between(subTime, now).toMillis();
-                if (waitMs > subscribeTimeoutMs) {
-                    timedOut++;
-                }
-            }
-        }
-
+        int subscribed = subscribedSymbols.size();
+        int active = countActiveSymbols(now);
+        int timedOut = countTimedOutSubscriptions(now);
         int leaky = leakyUnsubscribes.size();
 
-        Status status;
-        String message;
-
         if (subscribed == 0 && leaky == 0 && totalTicks.get() == 0) {
-            return ValidationResult.pass(Area.SUBSCRIPTION,
-                    "No subscriptions yet", 100.0, 100.0);
+            return ValidationResult.pass(Area.SUBSCRIPTION, "No subscriptions yet", 100.0, 100.0);
         }
 
-        if (leaky > 0) {
-            status = Status.FAIL;
-            message = String.format("Leaky unsubscribes: %s", leakyUnsubscribes);
-        } else if (subscribed > 0 && active == 0 && totalTicks.get() > 0) {
-            status = Status.FAIL;
-            message = String.format("All %d subscribed symbols inactive", subscribed);
-        } else if (timedOut > 0 || (subscribed > 0 && active < subscribed)) {
-            status = Status.WARN;
-            message = String.format("Active: %d/%d subscribed, timedOut: %d",
-                    active, subscribed, timedOut);
-        } else {
-            status = Status.PASS;
-            message = String.format("All %d subscribed symbols active", subscribed);
-        }
-
+        Status status = deriveStatus(subscribed, active, timedOut, leaky);
+        String message = buildMessage(subscribed, active, timedOut, leaky);
         double metric = subscribed == 0 ? 100.0 : 100.0 * active / subscribed;
 
-        ValidationResult result = new ValidationResult(Area.SUBSCRIPTION, status,
-                message, metric, 100.0);
+        ValidationResult result = new ValidationResult(Area.SUBSCRIPTION, status, message, metric, 100.0);
         result.getDetails().put("subscribedSymbols", Set.copyOf(subscribedSymbols));
         result.getDetails().put("activeCount", active);
         result.getDetails().put("subscribedCount", subscribed);
@@ -209,8 +173,46 @@ public class SubscriptionValidator implements Validator {
         result.getDetails().put("subscribeEvents", subscribeEvents.get());
         result.getDetails().put("unsubscribeEvents", unsubscribeEvents.get());
         result.getDetails().put("totalTicks", totalTicks.get());
-
         return result;
+    }
+
+    private int countActiveSymbols(Instant now) {
+        int active = 0;
+        for (String symbol : subscribedSymbols) {
+            Instant lastTick = lastTickTimeBySymbol.get(symbol);
+            if (lastTick != null && Duration.between(lastTick, now).toMillis() < activeThresholdMs) {
+                active++;
+            }
+        }
+        return active;
+    }
+
+    private int countTimedOutSubscriptions(Instant now) {
+        int timedOut = 0;
+        for (String symbol : subscribedSymbols) {
+            Instant subTime = subscribeTimeBySymbol.get(symbol);
+            if (subTime != null && !subscribeLatencyMs.containsKey(symbol)
+                    && Duration.between(subTime, now).toMillis() > subscribeTimeoutMs) {
+                timedOut++;
+            }
+        }
+        return timedOut;
+    }
+
+    private Status deriveStatus(int subscribed, int active, int timedOut, int leaky) {
+        if (leaky > 0) return Status.FAIL;
+        if (subscribed > 0 && active == 0 && totalTicks.get() > 0) return Status.FAIL;
+        if (timedOut > 0 || (subscribed > 0 && active < subscribed)) return Status.WARN;
+        return Status.PASS;
+    }
+
+    private String buildMessage(int subscribed, int active, int timedOut, int leaky) {
+        if (leaky > 0) return String.format("Leaky unsubscribes: %s", leakyUnsubscribes);
+        if (subscribed > 0 && active == 0 && totalTicks.get() > 0)
+            return String.format("All %d subscribed symbols inactive", subscribed);
+        if (timedOut > 0 || (subscribed > 0 && active < subscribed))
+            return String.format("Active: %d/%d subscribed, timedOut: %d", active, subscribed, timedOut);
+        return String.format("All %d subscribed symbols active", subscribed);
     }
 
     @Override
