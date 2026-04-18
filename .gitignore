@@ -4,6 +4,27 @@ frontend/dist/
 frontend/node_modules/
 frontend/coverage/
 
+# Untracked backend workspace files (not part of repo)
+backend/.dockerignore
+backend/.gitattributes
+backend/.gitignore
+backend/.github/
+backend/.vite/
+backend/CLAUDE.md
+backend/Dockerfile
+backend/README.md
+backend/backend/
+backend/build-dist.sh
+backend/dev-server-start.sh
+backend/dev-server-stop.sh
+backend/docker-compose.yml
+backend/docs/
+backend/feed-manager.py
+backend/frontend/
+backend/sonar-project.properties
+backend/test_output.txt
+backend/{
+
 # IDE
 .idea/
 .vscode/
