@@ -122,7 +122,7 @@ public class LVWRChaosSimulator implements Runnable {
                 FailureType failure = scenarioEngine.decide(config.get());
 
                 // Generate the tick (or handle special failure modes)
-                emitTick(state, instrId, failure);
+                emitTick(state, failure);
                 tradeCount++;
 
                 // Deadline-based pacing — stable throughput regardless of processing jitter
@@ -207,13 +207,10 @@ public class LVWRChaosSimulator implements Runnable {
 
     // --- Failure dispatch ---
 
-    private void emitTick(InstrumentState state, int instrId, FailureType failure) throws InterruptedException {
+    private void emitTick(InstrumentState state, FailureType failure) throws InterruptedException {
         if (failure == null) {
-            Tick tick = buildTick(state, instrId, null);
-            if (tick != null) {
-                tickConsumer.accept(tick);
-                ticksSent.incrementAndGet();
-            }
+            tickConsumer.accept(buildTick(state, null));
+            ticksSent.incrementAndGet();
             return;
         }
         switch (failure) {
@@ -232,7 +229,7 @@ public class LVWRChaosSimulator implements Runnable {
                 failureCountsByType.get(failure.name()).incrementAndGet();
             }
             default -> {
-                Tick tick = buildTick(state, instrId, failure);
+                Tick tick = buildTick(state, failure);
                 failureCountsByType.get(failure.name()).incrementAndGet();
                 if (tick != null) {
                     tickConsumer.accept(tick);
@@ -249,7 +246,7 @@ public class LVWRChaosSimulator implements Runnable {
      * Uses per-instrument sequence numbers so each symbol's seqNums are dense and
      * consecutive (1, 2, 3…), preventing false gap events in the CompletenessValidator.
      */
-    private Tick buildTick(InstrumentState state, int instrId, FailureType failure) {
+    private Tick buildTick(InstrumentState state, FailureType failure) {
         BigDecimal price = state.nextPrice();
         BigDecimal volume = randomVolume();
         long latencyMs = 2 + (long) (RANDOM.nextDouble() * 18); // 2–19 ms
